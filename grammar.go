@@ -305,6 +305,150 @@ func Grammar() *GrammarType {
 			Str(")"),
 		))
 
+		// =============================================
+		// LOW-LEVEL MEMORY MANAGEMENT FEATURES
+		// =============================================
+
+		// --- arena block: bump allocator ---
+		// arena scratch { body } or arena scratch 1024*1024 { body }
+		g.Define("arena_block", Seq(
+			Str("arena"),
+			Field("name", Sym("identifier")),
+			Optional(Field("size", Sym("_expression"))),
+			Sym("block"),
+		))
+
+		// --- pin/unpin: GC pinning ---
+		// pin data / unpin data
+		g.Define("pin_statement", Seq(
+			Str("pin"),
+			Field("name", Sym("identifier")),
+		))
+		g.Define("unpin_statement", Seq(
+			Str("unpin"),
+			Field("name", Sym("identifier")),
+		))
+
+		// --- unsafe cast: zero-copy type conversion ---
+		// unsafe cast(expr, TargetType)
+		g.Define("unsafe_cast", Seq(
+			Str("unsafe"),
+			Str("cast"),
+			Str("("),
+			Field("expr", Sym("_expression")),
+			Str(","),
+			Field("target_type", Sym("_type")),
+			Str(")"),
+		))
+
+		// --- mmap block: memory-mapped file ---
+		// mmap file "data.bin" as data []byte { body }
+		g.Define("mmap_block", Seq(
+			Str("mmap"),
+			Str("file"),
+			Field("path", Sym("_string_literal")),
+			Str("as"),
+			Field("name", Sym("identifier")),
+			Field("type", Sym("_type")),
+			Sym("block"),
+		))
+
+		// --- packed annotation ---
+		// packed struct Packet { ... }
+		g.Define("packed_annotation", Seq(
+			Str("packed"),
+			Field("decl", Sym("_statement")),
+		))
+
+		// --- vectorize hint ---
+		// vectorize for v in items { body }
+		g.Define("vectorize_statement", Seq(
+			Str("vectorize"),
+			Str("for"),
+			Field("var", Sym("identifier")),
+			Str("in"),
+			Field("range", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// =============================================
+		// CONCURRENCY FEATURES
+		// =============================================
+
+		// --- select! with sugar ---
+		g.Define("select_arm", Choice(
+			Seq(Field("var", Sym("identifier")), Str("from"), Field("chan", Sym("_expression")), Str("=>"), Field("body", Sym("_expression"))),
+			Seq(Str("timeout"), Field("duration", Sym("_expression")), Str("=>"), Field("body", Sym("_expression"))),
+			Seq(Str("default"), Str("=>"), Field("body", Sym("_expression"))),
+		))
+		g.Define("select_block", Seq(
+			Str("select!"),
+			Str("{"),
+			Repeat1(Seq(Sym("select_arm"), Optional(Str(",")))),
+			Str("}"),
+		))
+
+		// --- fan out: goroutine pool ---
+		// fan out workers, 10 { body }
+		g.Define("fan_out_block", Seq(
+			Str("fan"),
+			Str("out"),
+			Field("name", Sym("identifier")),
+			Str(","),
+			Field("count", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// --- fan in: merge channels ---
+		// fan in [ch1, ch2, ch3]
+		g.Define("fan_in_expression", Seq(
+			Str("fan"),
+			Str("in"),
+			Str("["),
+			CommaSep1(Field("channels", Sym("_expression"))),
+			Str("]"),
+		))
+
+		// --- pipeline: chained channel processing ---
+		// data |> filter(valid) |> transform(normalize)
+		g.Define("_pipe_op", Token(Seq(Str("|"), Str(">"))))
+		g.Define("pipeline_expression", PrecLeft(1, Seq(
+			Field("left", Sym("_expression")),
+			Sym("_pipe_op"),
+			Field("right", Sym("_expression")),
+		)))
+
+		// --- concurrent: structured concurrency ---
+		// concurrent { stmt1; stmt2 }
+		g.Define("concurrent_block", Seq(
+			Str("concurrent"),
+			Sym("block"),
+		))
+
+		// --- throttle: rate limiter ---
+		// throttle 100 { body }
+		g.Define("throttle_block", Seq(
+			Str("throttle"),
+			Field("rate", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// --- retry: with backoff ---
+		// retry 3 { body }
+		g.Define("retry_block", Seq(
+			Str("retry"),
+			Field("count", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// --- breaker: circuit breaker ---
+		// breaker "service" { body }
+		g.Define("breaker_block", Seq(
+			Str("breaker"),
+			Field("name", Sym("_string_literal")),
+			Sym("block"),
+		))
+
 		// Wire into grammar
 		AppendChoice(g, "_top_level_declaration",
 			Sym("enum_declaration"),
@@ -322,6 +466,11 @@ func Grammar() *GrammarType {
 			Sym("range_expression"),
 			Sym("fstring"),
 			Sym("list_comprehension"),
+			// Low-level
+			Sym("unsafe_cast"),
+			// Concurrency
+			Sym("fan_in_expression"),
+			Sym("pipeline_expression"),
 		)
 
 		AppendChoice(g, "_statement",
@@ -340,6 +489,20 @@ func Grammar() *GrammarType {
 			Sym("swap_statement"),
 			Sym("derive_declaration"),
 			Sym("impl_block"),
+			// Low-level
+			Sym("arena_block"),
+			Sym("pin_statement"),
+			Sym("unpin_statement"),
+			Sym("mmap_block"),
+			Sym("packed_annotation"),
+			Sym("vectorize_statement"),
+			// Concurrency
+			Sym("select_block"),
+			Sym("fan_out_block"),
+			Sym("concurrent_block"),
+			Sym("throttle_block"),
+			Sym("retry_block"),
+			Sym("breaker_block"),
 		)
 
 		// Mark new keywords as non-keyword strings
@@ -353,6 +516,24 @@ func Grammar() *GrammarType {
 		g.NonKeywordStrings["until"] = true
 		g.NonKeywordStrings["repeat"] = true
 		g.NonKeywordStrings["swap"] = true
+		// Low-level keywords
+		g.NonKeywordStrings["arena"] = true
+		g.NonKeywordStrings["pin"] = true
+		g.NonKeywordStrings["unpin"] = true
+		// Note: "unsafe" is already a Go keyword
+		g.NonKeywordStrings["mmap"] = true
+		g.NonKeywordStrings["packed"] = true
+		g.NonKeywordStrings["vectorize"] = true
+		// Concurrency keywords
+		// Note: "select" is already a Go keyword; "select!" is a new token
+		g.NonKeywordStrings["fan"] = true
+		g.NonKeywordStrings["out"] = true
+		g.NonKeywordStrings["from"] = true
+		g.NonKeywordStrings["timeout"] = true
+		g.NonKeywordStrings["concurrent"] = true
+		g.NonKeywordStrings["throttle"] = true
+		g.NonKeywordStrings["retry"] = true
+		g.NonKeywordStrings["breaker"] = true
 		// Note: "for" is NOT added — it's already a Go keyword and should be promoted
 		// Note: "f" is NOT added — fstring uses a Token(Pat(...)) so no keyword conflict
 
@@ -420,6 +601,44 @@ func Grammar() *GrammarType {
 		// impl_block has block like function_declaration
 		AddConflict(g, "_top_level_declaration", "impl_block")
 		AddConflict(g, "_top_level_declaration", "derive_declaration")
+
+		// --- Low-level feature conflicts ---
+		AddConflict(g, "_statement", "arena_block")
+		AddConflict(g, "_statement", "pin_statement")
+		AddConflict(g, "_statement", "unpin_statement")
+		AddConflict(g, "_statement", "mmap_block")
+		AddConflict(g, "_statement", "packed_annotation")
+		AddConflict(g, "_statement", "vectorize_statement")
+		AddConflict(g, "_expression", "unsafe_cast")
+
+		// unsafe_cast starts with "unsafe" which is a Go keyword (unsafe block)
+		AddConflict(g, "unsafe_cast", "_expression")
+
+		// packed_annotation wraps a _statement
+		AddConflict(g, "packed_annotation", "_statement")
+
+		// vectorize starts with "vectorize for" — "for" conflicts with for_in
+		AddConflict(g, "vectorize_statement", "for_in_statement")
+
+		// --- Concurrency feature conflicts ---
+		AddConflict(g, "_statement", "select_block")
+		AddConflict(g, "_statement", "fan_out_block")
+		AddConflict(g, "_statement", "concurrent_block")
+		AddConflict(g, "_statement", "throttle_block")
+		AddConflict(g, "_statement", "retry_block")
+		AddConflict(g, "_statement", "breaker_block")
+		AddConflict(g, "_expression", "fan_in_expression")
+		AddConflict(g, "_expression", "pipeline_expression")
+
+		// pipeline_expression has PrecLeft(1) like other binary operators
+		AddConflict(g, "pipeline_expression", "binary_expression")
+		AddConflict(g, "pipeline_expression", "_expression")
+
+		// fan in/out both start with "fan"
+		AddConflict(g, "fan_in_expression", "fan_out_block")
+
+		// select_arm body is an expression — conflicts with other expression rules
+		AddConflict(g, "select_arm", "_expression")
 
 		g.EnableLRSplitting = true
 	})

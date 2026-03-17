@@ -828,3 +828,404 @@ func f() {
 		t.Error("should not contain 'swap' in output")
 	}
 }
+
+// =============================================
+// LOW-LEVEL MEMORY MANAGEMENT TRANSPILE TESTS
+// =============================================
+
+func TestTranspileArena(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	arena scratch {
+		x := 1
+		_ = x
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "_arena_scratch") {
+		t.Error("expected _arena_scratch variable")
+	}
+	if !strings.Contains(goCode, "_arenaAlloc_scratch") {
+		t.Error("expected _arenaAlloc_scratch function")
+	}
+	if !strings.Contains(goCode, "unsafe.Pointer") {
+		t.Error("expected unsafe.Pointer in arena allocator")
+	}
+	if !strings.Contains(goCode, `"unsafe"`) {
+		t.Error("expected unsafe import")
+	}
+	if strings.Contains(goCode, "arena") && !strings.Contains(goCode, "_arena") {
+		t.Error("should not contain raw 'arena' keyword in output")
+	}
+}
+
+func TestTranspileArenaWithSize(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	arena scratch 2048 {
+		x := 1
+		_ = x
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "_arenaSize := 2048") {
+		t.Errorf("expected custom size 2048, got:\n%s", goCode)
+	}
+}
+
+func TestTranspilePin(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	pin data
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "runtime.SetFinalizer") {
+		t.Error("expected runtime.SetFinalizer")
+	}
+	if !strings.Contains(goCode, "runtime.KeepAlive(data)") {
+		t.Error("expected runtime.KeepAlive(data)")
+	}
+	if !strings.Contains(goCode, `"runtime"`) {
+		t.Error("expected runtime import")
+	}
+}
+
+func TestTranspileUnpin(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	unpin data
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "runtime.KeepAlive(data)") {
+		t.Error("expected runtime.KeepAlive(data)")
+	}
+}
+
+func TestTranspileUnsafeCast(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	x := unsafe cast(s, int)
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "unsafe.Pointer") {
+		t.Error("expected unsafe.Pointer cast")
+	}
+	if !strings.Contains(goCode, `"unsafe"`) {
+		t.Error("expected unsafe import")
+	}
+}
+
+func TestTranspileMmap(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	mmap file "data.bin" as data int {
+		_ = data
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, `os.Open("data.bin")`) {
+		t.Error("expected os.Open call")
+	}
+	if !strings.Contains(goCode, "syscall.Mmap") {
+		t.Error("expected syscall.Mmap call")
+	}
+	if !strings.Contains(goCode, "syscall.Munmap") {
+		t.Error("expected syscall.Munmap cleanup")
+	}
+	if !strings.Contains(goCode, `"os"`) {
+		t.Error("expected os import")
+	}
+	if !strings.Contains(goCode, `"syscall"`) {
+		t.Error("expected syscall import")
+	}
+}
+
+func TestTranspilePacked(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	packed let x = 1
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "// packed: manual alignment required") {
+		t.Error("expected packed comment annotation")
+	}
+	if !strings.Contains(goCode, "x := 1") {
+		t.Error("expected let to transpile to :=")
+	}
+}
+
+func TestTranspileVectorize(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	vectorize for v in items {
+		_ = v
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "// vectorize: compiler hint") {
+		t.Error("expected vectorize hint comment")
+	}
+	if !strings.Contains(goCode, "range items") {
+		t.Error("expected range loop over items")
+	}
+	if strings.Contains(goCode, "vectorize for") {
+		t.Error("should not contain raw 'vectorize for' in output")
+	}
+}
+
+// =============================================
+// CONCURRENCY TRANSPILE TESTS
+// =============================================
+
+func TestTranspileSelectBlock(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	select! {
+		msg from inbox => process(msg),
+		timeout 5 => log(x),
+		default => noop(),
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "select {") {
+		t.Error("expected Go select statement")
+	}
+	if !strings.Contains(goCode, "case msg := <-inbox") {
+		t.Error("expected channel receive case")
+	}
+	if !strings.Contains(goCode, "time.After") {
+		t.Error("expected time.After for timeout")
+	}
+	if !strings.Contains(goCode, "default:") {
+		t.Error("expected default case")
+	}
+}
+
+func TestTranspileFanOut(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	fan out workers, 10 {
+		doWork()
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "sync.WaitGroup") {
+		t.Error("expected sync.WaitGroup")
+	}
+	if !strings.Contains(goCode, "_wi < 10") {
+		t.Error("expected worker count loop")
+	}
+	if !strings.Contains(goCode, "go func()") {
+		t.Error("expected goroutine launch")
+	}
+	if !strings.Contains(goCode, ".Wait()") {
+		t.Error("expected WaitGroup.Wait()")
+	}
+	if !strings.Contains(goCode, `"sync"`) {
+		t.Error("expected sync import")
+	}
+}
+
+func TestTranspileFanIn(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	merged := fan in [ch1, ch2, ch3]
+	_ = merged
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func() <-chan interface{}") {
+		t.Error("expected channel merge IIFE")
+	}
+	if !strings.Contains(goCode, "sync.WaitGroup") {
+		t.Error("expected sync.WaitGroup in fan-in")
+	}
+	if !strings.Contains(goCode, "close(out)") {
+		t.Error("expected channel close")
+	}
+}
+
+func TestTranspilePipeline(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	x := data |> transform
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "transform(data)") {
+		t.Errorf("expected 'transform(data)', got:\n%s", goCode)
+	}
+}
+
+func TestTranspileConcurrent(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	concurrent {
+		fetch("url1")
+		fetch("url2")
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "sync.WaitGroup") {
+		t.Error("expected sync.WaitGroup")
+	}
+	if !strings.Contains(goCode, "go func()") {
+		t.Error("expected goroutine launches")
+	}
+	if !strings.Contains(goCode, "_wg.Wait()") {
+		t.Error("expected WaitGroup.Wait()")
+	}
+}
+
+func TestTranspileThrottle(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	throttle 100 {
+		doWork()
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "time.NewTicker") {
+		t.Error("expected time.NewTicker")
+	}
+	if !strings.Contains(goCode, "_ticker.Stop()") {
+		t.Error("expected ticker cleanup")
+	}
+	if !strings.Contains(goCode, `"time"`) {
+		t.Error("expected time import")
+	}
+}
+
+func TestTranspileRetry(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	retry 3 {
+		doWork()
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "_attempt < 3") {
+		t.Error("expected retry count of 3")
+	}
+	if !strings.Contains(goCode, "time.Sleep") {
+		t.Error("expected exponential backoff sleep")
+	}
+	if !strings.Contains(goCode, "_retryErr") {
+		t.Error("expected _retryErr variable")
+	}
+}
+
+func TestTranspileBreaker(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	breaker "myservice" {
+		callService()
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "Circuit breaker") {
+		t.Error("expected circuit breaker comment")
+	}
+	if !strings.Contains(goCode, "_breaker_myservice_failures") {
+		t.Error("expected breaker failure counter")
+	}
+	if !strings.Contains(goCode, "time.Since") {
+		t.Error("expected time.Since check")
+	}
+}

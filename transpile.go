@@ -58,6 +58,12 @@ type fwTranspiler struct {
 	needsJSON       bool
 	needsResultType bool
 	needsOptionType bool
+	needsUnsafe     bool
+	needsRuntime    bool
+	needsOS         bool
+	needsSyscall    bool
+	needsSync       bool
+	needsTime       bool
 	implReceiver    string // non-empty when inside an impl block
 }
 
@@ -125,6 +131,38 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitSwap(n)
 	case "function_declaration":
 		return t.emitFunctionDecl(n)
+	// Low-level features
+	case "arena_block":
+		return t.emitArena(n)
+	case "pin_statement":
+		return t.emitPin(n)
+	case "unpin_statement":
+		return t.emitUnpin(n)
+	case "unsafe_cast":
+		return t.emitUnsafeCast(n)
+	case "mmap_block":
+		return t.emitMmap(n)
+	case "packed_annotation":
+		return t.emitPacked(n)
+	case "vectorize_statement":
+		return t.emitVectorize(n)
+	// Concurrency features
+	case "select_block":
+		return t.emitSelectBlock(n)
+	case "fan_out_block":
+		return t.emitFanOut(n)
+	case "fan_in_expression":
+		return t.emitFanIn(n)
+	case "pipeline_expression":
+		return t.emitPipeline(n)
+	case "concurrent_block":
+		return t.emitConcurrent(n)
+	case "throttle_block":
+		return t.emitThrottle(n)
+	case "retry_block":
+		return t.emitRetry(n)
+	case "breaker_block":
+		return t.emitBreaker(n)
 	default:
 		return t.emitDefault(n)
 	}
@@ -819,6 +857,24 @@ func (t *fwTranspiler) injectImports(code string) string {
 	if t.needsJSON && !strings.Contains(code, `"encoding/json"`) {
 		needed = append(needed, `"encoding/json"`)
 	}
+	if t.needsUnsafe && !strings.Contains(code, `"unsafe"`) {
+		needed = append(needed, `"unsafe"`)
+	}
+	if t.needsRuntime && !strings.Contains(code, `"runtime"`) {
+		needed = append(needed, `"runtime"`)
+	}
+	if t.needsOS && !strings.Contains(code, `"os"`) {
+		needed = append(needed, `"os"`)
+	}
+	if t.needsSyscall && !strings.Contains(code, `"syscall"`) {
+		needed = append(needed, `"syscall"`)
+	}
+	if t.needsSync && !strings.Contains(code, `"sync"`) {
+		needed = append(needed, `"sync"`)
+	}
+	if t.needsTime && !strings.Contains(code, `"time"`) {
+		needed = append(needed, `"time"`)
+	}
 	if len(needed) == 0 {
 		return code
 	}
@@ -863,4 +919,366 @@ func (t *fwTranspiler) injectImports(code string) string {
 	}
 
 	return code
+}
+
+// =============================================
+// LOW-LEVEL MEMORY MANAGEMENT EMIT HANDLERS
+// =============================================
+
+// arena scratch { body } or arena scratch 1024*1024 { body }
+// -> bump allocator with make([]byte, 0, size)
+func (t *fwTranspiler) emitArena(n *gotreesitter.Node) string {
+	nameNode := t.childByField(n, "name")
+	if nameNode == nil {
+		return t.text(n)
+	}
+	name := t.text(nameNode)
+	t.needsUnsafe = true
+
+	sizeExpr := "1 << 20" // default 1MB
+	if sizeNode := t.childByField(n, "size"); sizeNode != nil {
+		sizeExpr = t.emit(sizeNode)
+	}
+
+	block := t.findBlock(n)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "_arenaSize := %s\n", sizeExpr)
+	fmt.Fprintf(&b, "_arena_%s := make([]byte, 0, _arenaSize)\n", name)
+	fmt.Fprintf(&b, "_arenaAlloc_%s := func(size int) unsafe.Pointer {\n", name)
+	fmt.Fprintf(&b, "\toff := len(_arena_%s)\n", name)
+	fmt.Fprintf(&b, "\t_arena_%s = _arena_%s[:off+size]\n", name, name)
+	fmt.Fprintf(&b, "\treturn unsafe.Pointer(&_arena_%s[off])\n", name)
+	fmt.Fprintf(&b, "}\n")
+	fmt.Fprintf(&b, "_ = _arenaAlloc_%s\n", name)
+	fmt.Fprintf(&b, "defer func() { _arena_%s = nil }()\n", name)
+	b.WriteString(block)
+	return b.String()
+}
+
+// pin data -> runtime.KeepAlive + SetFinalizer(nil)
+func (t *fwTranspiler) emitPin(n *gotreesitter.Node) string {
+	nameNode := t.childByField(n, "name")
+	if nameNode == nil {
+		return t.text(n)
+	}
+	name := t.text(nameNode)
+	t.needsRuntime = true
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "_pin_%s := &%s\n", name, name)
+	fmt.Fprintf(&b, "runtime.SetFinalizer(_pin_%s, nil)\n", name)
+	fmt.Fprintf(&b, "defer runtime.KeepAlive(%s)", name)
+	return b.String()
+}
+
+// unpin data -> runtime.KeepAlive at this point
+func (t *fwTranspiler) emitUnpin(n *gotreesitter.Node) string {
+	nameNode := t.childByField(n, "name")
+	if nameNode == nil {
+		return t.text(n)
+	}
+	name := t.text(nameNode)
+	t.needsRuntime = true
+
+	return fmt.Sprintf("runtime.KeepAlive(%s)", name)
+}
+
+// unsafe cast(expr, TargetType) -> *(*TargetType)(unsafe.Pointer(&expr))
+func (t *fwTranspiler) emitUnsafeCast(n *gotreesitter.Node) string {
+	expr := t.childByField(n, "expr")
+	targetType := t.childByField(n, "target_type")
+	if expr == nil || targetType == nil {
+		return t.text(n)
+	}
+	t.needsUnsafe = true
+
+	return fmt.Sprintf("*(*%s)(unsafe.Pointer(&%s))", t.emit(targetType), t.emit(expr))
+}
+
+// mmap file "data.bin" as data []byte { body }
+func (t *fwTranspiler) emitMmap(n *gotreesitter.Node) string {
+	pathNode := t.childByField(n, "path")
+	nameNode := t.childByField(n, "name")
+	if pathNode == nil || nameNode == nil {
+		return t.text(n)
+	}
+	t.needsOS = true
+	t.needsSyscall = true
+
+	pathStr := t.text(pathNode)
+	name := t.text(nameNode)
+	block := t.findBlock(n)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "_f, _ := os.Open(%s)\n", pathStr)
+	b.WriteString("defer _f.Close()\n")
+	b.WriteString("_fi, _ := _f.Stat()\n")
+	fmt.Fprintf(&b, "%s, _ := syscall.Mmap(int(_f.Fd()), 0, int(_fi.Size()), syscall.PROT_READ, syscall.MAP_SHARED)\n", name)
+	fmt.Fprintf(&b, "defer syscall.Munmap(%s)\n", name)
+	b.WriteString(block)
+	return b.String()
+}
+
+// packed struct Foo { ... } -> pass through with alignment comment
+func (t *fwTranspiler) emitPacked(n *gotreesitter.Node) string {
+	decl := t.childByField(n, "decl")
+	if decl == nil {
+		return t.text(n)
+	}
+	return "// packed: manual alignment required\n" + t.emit(decl)
+}
+
+// vectorize for v in items { body } -> for loop with vectorize hint comment
+func (t *fwTranspiler) emitVectorize(n *gotreesitter.Node) string {
+	varNode := t.childByField(n, "var")
+	rangeNode := t.childByField(n, "range")
+	if varNode == nil || rangeNode == nil {
+		return t.text(n)
+	}
+
+	varName := t.text(varNode)
+	block := t.findBlock(n)
+
+	// Check if range is a range_expression (0..N)
+	if t.nodeType(rangeNode) == "range_expression" {
+		start := t.childByField(rangeNode, "start")
+		end := t.childByField(rangeNode, "end")
+		if start != nil && end != nil {
+			return fmt.Sprintf("// vectorize: compiler hint\nfor %s := %s; %s < %s; %s++ %s",
+				varName, t.emit(start), varName, t.emit(end), varName, block)
+		}
+	}
+
+	return fmt.Sprintf("// vectorize: compiler hint\nfor _, %s := range %s %s", varName, t.emit(rangeNode), block)
+}
+
+// =============================================
+// CONCURRENCY EMIT HANDLERS
+// =============================================
+
+// select! { arm, arm, ... } -> Go select statement
+func (t *fwTranspiler) emitSelectBlock(n *gotreesitter.Node) string {
+	var b strings.Builder
+	b.WriteString("select {\n")
+
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) != "select_arm" {
+			continue
+		}
+
+		// Check which kind of arm: var from chan, timeout duration, or default
+		varNode := t.childByField(c, "var")
+		chanNode := t.childByField(c, "chan")
+		durNode := t.childByField(c, "duration")
+		bodyNode := t.childByField(c, "body")
+
+		if bodyNode == nil {
+			continue
+		}
+
+		if varNode != nil && chanNode != nil {
+			// var from chan => body
+			fmt.Fprintf(&b, "case %s := <-%s:\n\t%s\n",
+				t.text(varNode), t.emit(chanNode), t.emit(bodyNode))
+		} else if durNode != nil {
+			// timeout duration => body
+			t.needsTime = true
+			fmt.Fprintf(&b, "case <-time.After(%s):\n\t%s\n",
+				t.emit(durNode), t.emit(bodyNode))
+		} else {
+			// default => body
+			fmt.Fprintf(&b, "default:\n\t%s\n", t.emit(bodyNode))
+		}
+	}
+
+	b.WriteString("}")
+	return b.String()
+}
+
+// fan out workers, 10 { body } -> WaitGroup + goroutines
+func (t *fwTranspiler) emitFanOut(n *gotreesitter.Node) string {
+	nameNode := t.childByField(n, "name")
+	countNode := t.childByField(n, "count")
+	if nameNode == nil || countNode == nil {
+		return t.text(n)
+	}
+	t.needsSync = true
+
+	block := t.findBlock(n)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "var _wg_%s sync.WaitGroup\n", t.text(nameNode))
+	fmt.Fprintf(&b, "for _wi := 0; _wi < %s; _wi++ {\n", t.emit(countNode))
+	fmt.Fprintf(&b, "\t_wg_%s.Add(1)\n", t.text(nameNode))
+	b.WriteString("\tgo func() {\n")
+	fmt.Fprintf(&b, "\t\tdefer _wg_%s.Done()\n", t.text(nameNode))
+	fmt.Fprintf(&b, "\t\t%s\n", block)
+	b.WriteString("\t}()\n")
+	b.WriteString("}\n")
+	fmt.Fprintf(&b, "_wg_%s.Wait()", t.text(nameNode))
+	return b.String()
+}
+
+// fan in [ch1, ch2, ch3] -> merge channels IIFE
+func (t *fwTranspiler) emitFanIn(n *gotreesitter.Node) string {
+	t.needsSync = true
+
+	// Collect all channel expressions
+	var channels []string
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) != "comment" {
+			channels = append(channels, t.emit(c))
+		}
+	}
+	if len(channels) == 0 {
+		return t.text(n)
+	}
+
+	var b strings.Builder
+	b.WriteString("func() <-chan interface{} {\n")
+	b.WriteString("\tout := make(chan interface{})\n")
+	b.WriteString("\tvar wg sync.WaitGroup\n")
+	fmt.Fprintf(&b, "\tfor _, _ch := range []<-chan interface{}{%s} {\n", strings.Join(channels, ", "))
+	b.WriteString("\t\twg.Add(1)\n")
+	b.WriteString("\t\tgo func(c <-chan interface{}) {\n")
+	b.WriteString("\t\t\tdefer wg.Done()\n")
+	b.WriteString("\t\t\tfor v := range c { out <- v }\n")
+	b.WriteString("\t\t}(_ch)\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tgo func() { wg.Wait(); close(out) }()\n")
+	b.WriteString("\treturn out\n")
+	b.WriteString("}()")
+	return b.String()
+}
+
+// left |> right -> right(left)
+func (t *fwTranspiler) emitPipeline(n *gotreesitter.Node) string {
+	left := t.childByField(n, "left")
+	right := t.childByField(n, "right")
+	if left == nil || right == nil {
+		return t.text(n)
+	}
+	return fmt.Sprintf("%s(%s)", t.emit(right), t.emit(left))
+}
+
+// concurrent { stmt1; stmt2 } -> WaitGroup wrapping each statement
+func (t *fwTranspiler) emitConcurrent(n *gotreesitter.Node) string {
+	t.needsSync = true
+
+	// Find the block, then find the statement_list inside it
+	var stmtListNode *gotreesitter.Node
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "block" {
+			// Inside a block, look for statement_list
+			for j := 0; j < int(c.NamedChildCount()); j++ {
+				sc := c.NamedChild(j)
+				if t.nodeType(sc) == "statement_list" {
+					stmtListNode = sc
+					break
+				}
+			}
+			if stmtListNode == nil {
+				stmtListNode = c // fallback to block itself
+			}
+			break
+		}
+	}
+	if stmtListNode == nil {
+		return t.text(n)
+	}
+
+	// Collect all statement children
+	var stmts []string
+	for i := 0; i < int(stmtListNode.NamedChildCount()); i++ {
+		c := stmtListNode.NamedChild(i)
+		stmts = append(stmts, t.emit(c))
+	}
+	if len(stmts) == 0 {
+		return "// concurrent: empty block"
+	}
+
+	var b strings.Builder
+	b.WriteString("var _wg sync.WaitGroup\n")
+	fmt.Fprintf(&b, "_wg.Add(%d)\n", len(stmts))
+	for _, stmt := range stmts {
+		fmt.Fprintf(&b, "go func() {\n\tdefer _wg.Done()\n\t%s\n}()\n", stmt)
+	}
+	b.WriteString("_wg.Wait()")
+	return b.String()
+}
+
+// throttle 100 { body } -> time.Ticker rate limiting
+func (t *fwTranspiler) emitThrottle(n *gotreesitter.Node) string {
+	rateNode := t.childByField(n, "rate")
+	if rateNode == nil {
+		return t.text(n)
+	}
+	t.needsTime = true
+
+	block := t.findBlock(n)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "_ticker := time.NewTicker(time.Second / %s)\n", t.emit(rateNode))
+	b.WriteString("defer _ticker.Stop()\n")
+	b.WriteString("<-_ticker.C\n")
+	b.WriteString(block)
+	return b.String()
+}
+
+// retry 3 { body } -> retry loop with exponential backoff
+func (t *fwTranspiler) emitRetry(n *gotreesitter.Node) string {
+	countNode := t.childByField(n, "count")
+	if countNode == nil {
+		return t.text(n)
+	}
+	t.needsTime = true
+
+	block := t.findBlock(n)
+
+	var b strings.Builder
+	b.WriteString("var _retryErr error\n")
+	fmt.Fprintf(&b, "for _attempt := 0; _attempt < %s; _attempt++ {\n", t.emit(countNode))
+	fmt.Fprintf(&b, "\t_retryErr = func() error {\n\t\t%s\n\t\treturn nil\n\t}()\n", block)
+	b.WriteString("\tif _retryErr == nil { break }\n")
+	b.WriteString("\ttime.Sleep(time.Duration(1<<_attempt) * 100 * time.Millisecond)\n")
+	b.WriteString("}\n")
+	b.WriteString("_ = _retryErr")
+	return b.String()
+}
+
+// breaker "service" { body } -> circuit breaker logic
+func (t *fwTranspiler) emitBreaker(n *gotreesitter.Node) string {
+	nameNode := t.childByField(n, "name")
+	if nameNode == nil {
+		return t.text(n)
+	}
+	t.needsTime = true
+
+	nameStr := t.text(nameNode)
+	// Sanitize the name for variable use (strip quotes)
+	varName := strings.Trim(nameStr, `"`)
+	block := t.findBlock(n)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "// Circuit breaker for %s\n", nameStr)
+	fmt.Fprintf(&b, "if _breaker_%s_failures >= 5 && time.Since(_breaker_%s_lastFail) < 30*time.Second {\n", varName, varName)
+	fmt.Fprintf(&b, "\t// circuit open - skip\n")
+	fmt.Fprintf(&b, "} else {\n")
+	fmt.Fprintf(&b, "\tfunc() {\n")
+	fmt.Fprintf(&b, "\t\tdefer func() {\n")
+	fmt.Fprintf(&b, "\t\t\tif r := recover(); r != nil {\n")
+	fmt.Fprintf(&b, "\t\t\t\t_breaker_%s_failures++\n", varName)
+	fmt.Fprintf(&b, "\t\t\t\t_breaker_%s_lastFail = time.Now()\n", varName)
+	fmt.Fprintf(&b, "\t\t\t} else {\n")
+	fmt.Fprintf(&b, "\t\t\t\t_breaker_%s_failures = 0\n", varName)
+	fmt.Fprintf(&b, "\t\t\t}\n")
+	fmt.Fprintf(&b, "\t\t}()\n")
+	fmt.Fprintf(&b, "\t\t%s\n", block)
+	fmt.Fprintf(&b, "\t}()\n")
+	fmt.Fprintf(&b, "}")
+	return b.String()
 }

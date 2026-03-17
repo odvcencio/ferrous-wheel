@@ -642,3 +642,277 @@ func f() {
 		t.Error("expected derive_declaration in function body")
 	}
 }
+
+// =============================================
+// LOW-LEVEL MEMORY MANAGEMENT PARSE TESTS
+// =============================================
+
+func TestArenaBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	arena scratch {
+		x := 1
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "arena_block") {
+		t.Error("expected arena_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestArenaBlockWithSize(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	arena scratch 1024 {
+		x := 1
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "arena_block") {
+		t.Error("expected arena_block with size")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestPinStatement(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	pin data
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "pin_statement") {
+		t.Error("expected pin_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestUnpinStatement(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	unpin data
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "unpin_statement") {
+		t.Error("expected unpin_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestUnsafeCast(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	x := unsafe cast(s, int)
+	_ = x
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "unsafe_cast") {
+		t.Error("expected unsafe_cast")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestMmapBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	mmap file "data.bin" as data int {
+		_ = data
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "mmap_block") {
+		t.Error("expected mmap_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestPackedAnnotation(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	packed let x = 1
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "packed_annotation") {
+		t.Error("expected packed_annotation")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestVectorizeStatement(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	vectorize for v in items {
+		_ = v
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "vectorize_statement") {
+		t.Error("expected vectorize_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+// =============================================
+// CONCURRENCY PARSE TESTS
+// =============================================
+
+func TestSelectBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	select! {
+		msg from inbox => process(msg),
+		timeout 5 => log(x),
+		default => noop(),
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "select_block") {
+		t.Error("expected select_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestFanOutBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	fan out workers, 10 {
+		doWork()
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "fan_out_block") {
+		t.Error("expected fan_out_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestFanInExpression(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	merged := fan in [ch1, ch2, ch3]
+	_ = merged
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "fan_in_expression") {
+		t.Error("expected fan_in_expression")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestPipelineExpression(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	x := data |> transform
+	_ = x
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "pipeline_expression") {
+		t.Error("expected pipeline_expression")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestConcurrentBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	concurrent {
+		fetch("url1")
+		fetch("url2")
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "concurrent_block") {
+		t.Error("expected concurrent_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestThrottleBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	throttle 100 {
+		doWork()
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "throttle_block") {
+		t.Error("expected throttle_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestRetryBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	retry 3 {
+		doWork()
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "retry_block") {
+		t.Error("expected retry_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestBreakerBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	breaker "myservice" {
+		callService()
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "breaker_block") {
+		t.Error("expected breaker_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
