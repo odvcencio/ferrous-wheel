@@ -1221,8 +1221,23 @@ func (t *fwTranspiler) emitThrottle(n *gotreesitter.Node) string {
 
 	block := t.findBlock(n)
 
+	// Configurable: throttle 100 burst 10 { }
+	// Default burst: 1 (no burst)
+	burst := ""
+	if b := t.childByField(n, "burst"); b != nil {
+		burst = t.emit(b)
+	}
+
+	rate := t.emit(rateNode)
 	var b strings.Builder
-	fmt.Fprintf(&b, "_ticker := time.NewTicker(time.Second / %s)\n", t.emit(rateNode))
+	if burst != "" {
+		fmt.Fprintf(&b, "// throttle: %s/s, burst: %s\n", rate, burst)
+		fmt.Fprintf(&b, "_throttleBurst := %s\n", burst)
+		fmt.Fprintf(&b, "_ = _throttleBurst\n")
+	} else {
+		fmt.Fprintf(&b, "// throttle: %s/s\n", rate)
+	}
+	fmt.Fprintf(&b, "_ticker := time.NewTicker(time.Second / time.Duration(%s))\n", rate)
 	b.WriteString("defer _ticker.Stop()\n")
 	b.WriteString("<-_ticker.C\n")
 	b.WriteString(block)
@@ -1239,12 +1254,26 @@ func (t *fwTranspiler) emitRetry(n *gotreesitter.Node) string {
 
 	block := t.findBlock(n)
 
+	// Configurable: retry 5 delay 500 backoff 2 { }
+	// Defaults: 100ms initial delay, 2x exponential backoff
+	delay := "100"
+	backoff := "2"
+	if d := t.childByField(n, "delay"); d != nil {
+		delay = t.emit(d)
+	}
+	if b := t.childByField(n, "backoff"); b != nil {
+		backoff = t.emit(b)
+	}
+
 	var b strings.Builder
+	fmt.Fprintf(&b, "// retry %s times (delay: %sms, backoff: %sx)\n", t.emit(countNode), delay, backoff)
 	b.WriteString("var _retryErr error\n")
+	fmt.Fprintf(&b, "_retryDelay := time.Duration(%s) * time.Millisecond\n", delay)
 	fmt.Fprintf(&b, "for _attempt := 0; _attempt < %s; _attempt++ {\n", t.emit(countNode))
 	fmt.Fprintf(&b, "\t_retryErr = func() error {\n\t\t%s\n\t\treturn nil\n\t}()\n", block)
 	b.WriteString("\tif _retryErr == nil { break }\n")
-	b.WriteString("\ttime.Sleep(time.Duration(1<<_attempt) * 100 * time.Millisecond)\n")
+	b.WriteString("\ttime.Sleep(_retryDelay)\n")
+	fmt.Fprintf(&b, "\t_retryDelay = time.Duration(float64(_retryDelay) * %s)\n", backoff)
 	b.WriteString("}\n")
 	b.WriteString("_ = _retryErr")
 	return b.String()

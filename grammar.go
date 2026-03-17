@@ -427,17 +427,24 @@ func Grammar() *GrammarType {
 
 		// --- throttle: rate limiter ---
 		// throttle 100 { body }
+		// throttle 100 { } — defaults: burst=1
+		// throttle 100 burst 10 { } — explicit burst
 		g.Define("throttle_block", Seq(
 			Str("throttle"),
 			Field("rate", Sym("_expression")),
+			Optional(Seq(Str("burst"), Field("burst", Sym("_expression")))),
 			Sym("block"),
 		))
 
 		// --- retry: with backoff ---
 		// retry 3 { body }
+		// retry 3 { } — defaults: delay=100ms, backoff=exponential
+		// retry 5 delay 500 backoff 2 { } — 500ms initial, 2x multiplier
 		g.Define("retry_block", Seq(
 			Str("retry"),
 			Field("count", Sym("_expression")),
+			Optional(Seq(Str("delay"), Field("delay", Sym("_expression")))),
+			Optional(Seq(Str("backoff"), Field("backoff", Sym("_expression")))),
 			Sym("block"),
 		))
 
