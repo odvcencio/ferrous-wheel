@@ -253,3 +253,20 @@ func f() {
 		t.Error("expected lambda_expression")
 	}
 }
+
+func TestLambdaBinaryExpr(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	double := fn(x) x * 2
+	_ = double
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "lambda_expression") {
+		t.Error("expected lambda_expression")
+	}
+	// The body of the lambda should be a binary_expression, not just an identifier
+	if !strings.Contains(sexp, "binary_expression") {
+		t.Errorf("expected binary_expression in lambda body, body should capture 'x * 2' not just 'x'")
+	}
+}

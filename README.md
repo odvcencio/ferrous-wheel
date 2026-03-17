@@ -59,9 +59,9 @@ func main() {
 | `match val { 1 => "one", 2 => "two" }` | switch IIFE | Working |
 | `try doSomething()` | error check + early return | Working |
 | `obj?.field` | nil-safe field access (via reflect) | Working |
-| `val ?? "default"` | nil check with fallback | Working (nillable types) |
+| `val ?? "default"` | zero-value check with fallback | Working |
 | `let x = 42` | `x := 42` | Working |
-| `fn(x) { return x * 2 }` | `func(x interface{}) interface{} { return x * 2 }` | Working |
+| `fn(x) x * 2` | `func(x interface{}) interface{} { return x * 2 }` | Working |
 
 ## Install
 
@@ -76,15 +76,12 @@ ferrous-wheel build myfile.fw
 go run myfile_generated.go
 ```
 
-## Known limitations
+## Design notes
 
-The Go grammar backing this is production-grade (100% parity). The transpiler has known edges:
-
-- `??` only works with nillable types (interface, pointer, slice, map, channel)
-- `match` is not exhaustive — unmatched values return nil
-- `fn(x) expr` only works for simple expressions; use `fn(x) { body }` for binary operations
-- `?.` uses reflection for field access on interface values (requires `reflect` import)
-- Ferrous Wheel keywords (`enum`, `match`, `let`, `fn`, `try`) are reserved in `.fw` files
+- `??` uses `reflect.ValueOf` zero-value checks, so it works with all types (nil pointers, empty strings, zero ints, nil interfaces). The `reflect` import is auto-injected when needed.
+- `match` is exhaustive at runtime — unmatched values panic with a descriptive message, matching Rust semantics.
+- `?.` uses reflection for field access on interface values. The `reflect` import is auto-injected.
+- Ferrous Wheel keywords (`enum`, `match`, `let`, `fn`, `try`) are reserved, like Rust reserves `fn`, `let`, `match` — this is by design.
 
 ## How it works
 

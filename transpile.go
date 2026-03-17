@@ -40,12 +40,16 @@ func Transpile(source []byte) (string, error) {
 	}
 
 	t := &fwTranspiler{src: source, lang: lang}
-	return t.emit(root), nil
+	result := t.emit(root)
+	result = t.injectImports(result)
+	return result, nil
 }
 
 type fwTranspiler struct {
-	src  []byte
-	lang *gotreesitter.Language
+	src          []byte
+	lang         *gotreesitter.Language
+	needsReflect bool
+	needsFmt     bool
 }
 
 func (t *fwTranspiler) text(n *gotreesitter.Node) string {
@@ -210,19 +214,23 @@ func (t *fwTranspiler) emitMatch(n *gotreesitter.Node) string {
 		}
 	}
 
-	b.WriteString("default:\n\treturn nil\n}\n}()")
+	b.WriteString("default:\n\tpanic(fmt.Sprintf(\"non-exhaustive match: no arm matched value %v\", ")
+	b.WriteString(t.emit(subject))
+	b.WriteString("))\n}\n}()")
+	t.needsFmt = true
 	return b.String()
 }
 
-// val ?? "default" -> nil-coalescing
+// val ?? "default" -> zero-value coalescing (works for ALL types)
 func (t *fwTranspiler) emitNullCoalesce(n *gotreesitter.Node) string {
 	left := t.childByField(n, "left")
 	right := t.childByField(n, "right")
 	if left == nil || right == nil {
 		return t.text(n)
 	}
+	t.needsReflect = true
 	l := t.emit(left)
-	return fmt.Sprintf("func() interface{} { if %s != nil { return %s }; return %s }()", l, l, t.emit(right))
+	return fmt.Sprintf("func() interface{} { _v := reflect.ValueOf(%s); if _v.IsValid() && !_v.IsZero() { return %s }; return %s }()", l, l, t.emit(right))
 }
 
 // try expr -> error propagation (standalone, not inside a call)
@@ -265,6 +273,7 @@ func (t *fwTranspiler) emitSafeNav(n *gotreesitter.Node) string {
 	if obj == nil || field == nil {
 		return t.text(n)
 	}
+	t.needsReflect = true
 	o := t.emit(obj)
 	f := t.text(field)
 	return fmt.Sprintf("func() interface{} { _o := %s; if _o == nil { return nil }; return reflect.ValueOf(_o).Elem().FieldByName(%q).Interface() }()", o, f)
@@ -306,4 +315,61 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 	}
 
 	return b.String()
+}
+
+// injectImports adds required imports (reflect, fmt) after transpilation.
+// It looks for an existing import block and appends missing imports, or inserts
+// a new import statement after the package clause if none exists.
+func (t *fwTranspiler) injectImports(code string) string {
+	var needed []string
+	if t.needsReflect && !strings.Contains(code, `"reflect"`) {
+		needed = append(needed, `"reflect"`)
+	}
+	if t.needsFmt && !strings.Contains(code, `"fmt"`) {
+		needed = append(needed, `"fmt"`)
+	}
+	if len(needed) == 0 {
+		return code
+	}
+
+	// Try to find an existing import block: import ( ... )
+	if idx := strings.Index(code, "import ("); idx >= 0 {
+		// Insert after the opening paren
+		insertAt := idx + len("import (")
+		var inject strings.Builder
+		for _, imp := range needed {
+			inject.WriteString("\n\t")
+			inject.WriteString(imp)
+		}
+		return code[:insertAt] + inject.String() + code[insertAt:]
+	}
+
+	// Try to find a single import statement: import "pkg"
+	if idx := strings.Index(code, "import "); idx >= 0 {
+		// Find the end of this import line
+		endIdx := strings.Index(code[idx:], "\n")
+		if endIdx >= 0 {
+			endIdx += idx
+			var inject strings.Builder
+			for _, imp := range needed {
+				inject.WriteString("\nimport ")
+				inject.WriteString(imp)
+			}
+			return code[:endIdx] + inject.String() + code[endIdx:]
+		}
+	}
+
+	// No import at all — insert after package clause
+	if idx := strings.Index(code, "\n"); idx >= 0 {
+		var inject strings.Builder
+		inject.WriteString("\n\nimport (")
+		for _, imp := range needed {
+			inject.WriteString("\n\t")
+			inject.WriteString(imp)
+		}
+		inject.WriteString("\n)")
+		return code[:idx] + inject.String() + code[idx:]
+	}
+
+	return code
 }

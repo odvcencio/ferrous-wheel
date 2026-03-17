@@ -120,10 +120,15 @@ func Grammar() *GrammarType {
 			Str(")"),
 		))
 
-		g.Define("lambda_expression", PrecDynamic(5, Seq(
+		// _lambda_body is a thin wrapper that gives the lambda body very low
+		// precedence, forcing binary operators to be absorbed into it rather
+		// than wrapping the lambda.
+		g.Define("_lambda_body", PrecRight(-100, Sym("_expression")))
+
+		g.Define("lambda_expression", PrecRight(-1, Seq(
 			Str("fn"),
 			Field("params", Sym("lambda_params")),
-			Field("body", Choice(Sym("block"), Sym("_expression"))),
+			Field("body", Choice(Sym("block"), Sym("_lambda_body"))),
 		)))
 
 		// Wire into grammar
@@ -162,6 +167,10 @@ func Grammar() *GrammarType {
 
 		// match_arm body can be expression or block, conflicts with Go block parsing
 		AddConflict(g, "match_arm", "_expression")
+
+		// lambda body vs binary expression: _lambda_body with PrecRight(-100)
+		// ensures fn(x) x * 2 parses as fn(x) (x * 2)
+		AddConflict(g, "lambda_expression", "binary_expression")
 
 		g.EnableLRSplitting = true
 	})
