@@ -76,6 +76,8 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitSafeNav(n)
 	case "lambda_expression":
 		return t.emitLambda(n)
+	case "call_expression":
+		return t.emitCall(n)
 	default:
 		return t.emitDefault(n)
 	}
@@ -223,7 +225,7 @@ func (t *fwTranspiler) emitNullCoalesce(n *gotreesitter.Node) string {
 	return fmt.Sprintf("func() interface{} { if %s != nil { return %s }; return %s }()", l, l, t.emit(right))
 }
 
-// try expr -> error propagation
+// try expr -> error propagation (standalone, not inside a call)
 func (t *fwTranspiler) emitErrorProp(n *gotreesitter.Node) string {
 	expr := t.childByField(n, "expr")
 	if expr == nil {
@@ -231,6 +233,29 @@ func (t *fwTranspiler) emitErrorProp(n *gotreesitter.Node) string {
 	}
 	e := t.emit(expr)
 	return fmt.Sprintf("func() interface{} { _v, _err := %s; if _err != nil { return _err }; return _v }()", e)
+}
+
+// call_expression: check if the function is an error_propagation (try funcName)(args)
+// In that case, wrap the entire call in the error-handling IIFE.
+func (t *fwTranspiler) emitCall(n *gotreesitter.Node) string {
+	if n.ChildCount() >= 2 {
+		fn := n.Child(0)
+		if t.nodeType(fn) == "error_propagation" {
+			// try funcName(args) → func() interface{} { _v, _err := funcName(args); ... }()
+			innerExpr := t.childByField(fn, "expr")
+			if innerExpr != nil {
+				funcName := t.emit(innerExpr)
+				// Collect the rest of the call (argument list)
+				var args string
+				for i := 1; i < int(n.ChildCount()); i++ {
+					args += t.emit(n.Child(i))
+				}
+				fullCall := funcName + args
+				return fmt.Sprintf("func() interface{} { _v, _err := %s; if _err != nil { return _err }; return _v }()", fullCall)
+			}
+		}
+	}
+	return t.emitDefault(n)
 }
 
 // obj?.field -> nil-safe field access
@@ -242,7 +267,7 @@ func (t *fwTranspiler) emitSafeNav(n *gotreesitter.Node) string {
 	}
 	o := t.emit(obj)
 	f := t.text(field)
-	return fmt.Sprintf("func() interface{} { if %s != nil { return %s.%s }; return nil }()", o, o, f)
+	return fmt.Sprintf("func() interface{} { _o := %s; if _o == nil { return nil }; return reflect.ValueOf(_o).Elem().FieldByName(%q).Interface() }()", o, f)
 }
 
 // fn(x, y) body -> func literal

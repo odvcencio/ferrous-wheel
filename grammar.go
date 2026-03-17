@@ -96,7 +96,7 @@ func Grammar() *GrammarType {
 		// --- error propagation: try expr ---
 		// Uses try prefix instead of ? suffix to avoid DFA conflict with ??
 		// try doSomething()  ->  if err != nil { return ..., err }
-		g.Define("error_propagation", PrecDynamic(10,
+		g.Define("error_propagation", PrecDynamic(-1,
 			Seq(
 				Str("try"),
 				Field("expr", Sym("_expression")),
