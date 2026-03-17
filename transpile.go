@@ -41,15 +41,22 @@ func Transpile(source []byte) (string, error) {
 
 	t := &fwTranspiler{src: source, lang: lang}
 	result := t.emit(root)
+
+	// Detect Result[T] and Option[T] usage in the transpiled output
+	t.detectGenericTypes(result)
+
 	result = t.injectImports(result)
+	result = t.injectGenericTypes(result)
 	return result, nil
 }
 
 type fwTranspiler struct {
-	src          []byte
-	lang         *gotreesitter.Language
-	needsReflect bool
-	needsFmt     bool
+	src            []byte
+	lang           *gotreesitter.Language
+	needsReflect   bool
+	needsFmt       bool
+	needsResultType bool
+	needsOptionType bool
 }
 
 func (t *fwTranspiler) text(n *gotreesitter.Node) string {
@@ -70,6 +77,10 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitEnum(n)
 	case "let_declaration":
 		return t.emitLet(n)
+	case "let_multi_declaration":
+		return t.emitLetMulti(n)
+	case "ternary_expression":
+		return t.emitTernary(n)
 	case "match_expression":
 		return t.emitMatch(n)
 	case "null_coalesce":
@@ -192,6 +203,40 @@ func (t *fwTranspiler) emitLet(n *gotreesitter.Node) string {
 	return fmt.Sprintf("%s := %s", t.text(nameNode), t.emit(value))
 }
 
+// let (a, b) = f() -> a, b := f()
+func (t *fwTranspiler) emitLetMulti(n *gotreesitter.Node) string {
+	value := t.childByField(n, "value")
+	if value == nil {
+		return t.text(n)
+	}
+
+	// Collect all identifier children (the names in the tuple)
+	var names []string
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "identifier" {
+			names = append(names, t.text(c))
+		}
+	}
+	if len(names) == 0 {
+		return t.text(n)
+	}
+
+	return fmt.Sprintf("%s := %s", strings.Join(names, ", "), t.emit(value))
+}
+
+// cond ? trueVal : falseVal -> func() interface{} { if cond { return trueVal }; return falseVal }()
+func (t *fwTranspiler) emitTernary(n *gotreesitter.Node) string {
+	cond := t.childByField(n, "condition")
+	cons := t.childByField(n, "consequence")
+	alt := t.childByField(n, "alternative")
+	if cond == nil || cons == nil || alt == nil {
+		return t.text(n)
+	}
+	return fmt.Sprintf("func() interface{} { if %s { return %s }; return %s }()",
+		t.emit(cond), t.emit(cons), t.emit(alt))
+}
+
 // match val { 1 => "one", 2 => "two" }
 // -> func() interface{} { switch val { case 1: return "one"; case 2: return "two" } }()
 func (t *fwTranspiler) emitMatch(n *gotreesitter.Node) string {
@@ -207,9 +252,17 @@ func (t *fwTranspiler) emitMatch(n *gotreesitter.Node) string {
 		c := n.NamedChild(i)
 		if t.nodeType(c) == "match_arm" {
 			pattern := t.childByField(c, "pattern")
+			guard := t.childByField(c, "guard")
 			body := t.childByField(c, "body")
 			if pattern != nil && body != nil {
-				fmt.Fprintf(&b, "case %s:\n\treturn %s\n", t.emit(pattern), t.emit(body))
+				if guard != nil {
+					// match x { n if n > 0 => "positive" }
+					// -> case n: if n > 0 { return "positive" }
+					fmt.Fprintf(&b, "case %s:\n\tif %s {\n\t\treturn %s\n\t}\n",
+						t.emit(pattern), t.emit(guard), t.emit(body))
+				} else {
+					fmt.Fprintf(&b, "case %s:\n\treturn %s\n", t.emit(pattern), t.emit(body))
+				}
 			}
 		}
 	}
@@ -314,6 +367,98 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 		fmt.Fprintf(&b, "{ return %s }", bodyText)
 	}
 
+	return b.String()
+}
+
+// detectGenericTypes scans transpiled output for Result[T] and Option[T] usage.
+func (t *fwTranspiler) detectGenericTypes(code string) {
+	if strings.Contains(code, "Result[") || strings.Contains(code, "Ok[") || strings.Contains(code, "Err[") {
+		t.needsResultType = true
+	}
+	if strings.Contains(code, "Option[") || strings.Contains(code, "Some[") || strings.Contains(code, "None[") {
+		t.needsOptionType = true
+	}
+}
+
+const resultTypeDef = `
+// Result is a Rust-inspired Result type for explicit error handling.
+type Result[T any] struct {
+	val T
+	err error
+	ok  bool
+}
+
+func Ok[T any](v T) Result[T]    { return Result[T]{val: v, ok: true} }
+func Err[T any](e error) Result[T] { return Result[T]{err: e} }
+func (r Result[T]) Unwrap() T     { if !r.ok { panic(r.err) }; return r.val }
+func (r Result[T]) UnwrapOr(def T) T {
+	if !r.ok {
+		return def
+	}
+	return r.val
+}
+func (r Result[T]) IsOk() bool  { return r.ok }
+func (r Result[T]) IsErr() bool { return !r.ok }
+func (r Result[T]) Map(f func(T) T) Result[T] {
+	if r.ok {
+		return Ok[T](f(r.val))
+	}
+	return r
+}
+func (r Result[T]) AndThen(f func(T) Result[T]) Result[T] {
+	if r.ok {
+		return f(r.val)
+	}
+	return r
+}
+`
+
+const optionTypeDef = `
+// Option is a Rust-inspired Option type for explicit nil handling.
+type Option[T any] struct {
+	val  T
+	some bool
+}
+
+func Some[T any](v T) Option[T] { return Option[T]{val: v, some: true} }
+func None[T any]() Option[T]    { return Option[T]{} }
+func (o Option[T]) Unwrap() T   { if !o.some { panic("unwrap on None") }; return o.val }
+func (o Option[T]) UnwrapOr(def T) T {
+	if !o.some {
+		return def
+	}
+	return o.val
+}
+func (o Option[T]) IsSome() bool { return o.some }
+func (o Option[T]) IsNone() bool { return !o.some }
+func (o Option[T]) Map(f func(T) T) Option[T] {
+	if o.some {
+		return Some[T](f(o.val))
+	}
+	return o
+}
+func (o Option[T]) Filter(f func(T) bool) Option[T] {
+	if o.some && f(o.val) {
+		return o
+	}
+	return None[T]()
+}
+`
+
+// injectGenericTypes appends Result and Option type definitions at the end of
+// the file when the transpiled code references them.
+func (t *fwTranspiler) injectGenericTypes(code string) string {
+	if !t.needsResultType && !t.needsOptionType {
+		return code
+	}
+	var b strings.Builder
+	b.WriteString(code)
+	if t.needsResultType {
+		b.WriteString(resultTypeDef)
+	}
+	if t.needsOptionType {
+		b.WriteString(optionTypeDef)
+	}
 	return b.String()
 }
 

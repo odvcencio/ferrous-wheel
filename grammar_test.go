@@ -270,3 +270,85 @@ func f() {
 		t.Errorf("expected binary_expression in lambda body, body should capture 'x * 2' not just 'x'")
 	}
 }
+
+// --- Feature 1: Ternary Operator ---
+
+func TestTernaryExpression(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	x := true ? 1 : 0
+	_ = x
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "ternary_expression") {
+		t.Error("expected ternary_expression")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestTernaryNested(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	x := a ? b : c ? d : e
+	_ = x
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "ternary_expression") {
+		t.Error("expected ternary_expression")
+	}
+}
+
+// --- Feature 3: Let Multi-Declaration ---
+
+func TestLetMultiDeclaration(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	let (a, b) = getPair()
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "let_multi_declaration") {
+		t.Error("expected let_multi_declaration")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestLetMultiThreeVars(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	let (x, y, z) = getTriple()
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "let_multi_declaration") {
+		t.Error("expected let_multi_declaration")
+	}
+}
+
+// --- Feature 4: Match Guards ---
+
+func TestMatchGuard(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	x := match val {
+		n if n > 0 => "positive",
+		n if n < 0 => "negative",
+		0 => "zero",
+	}
+	_ = x
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "match_expression") {
+		t.Error("expected match_expression")
+	}
+	if !strings.Contains(sexp, "match_arm") {
+		t.Error("expected match_arm")
+	}
+}

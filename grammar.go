@@ -7,11 +7,15 @@ package ferrouswheel
 //
 //	enum Color { Red, Green, Blue(int) }       -> struct + const + constructors
 //	match color { Red => ..., Blue(n) => ... } -> switch
+//	match x { n if n > 0 => "pos" }           -> switch with guard clauses
 //	val := try doSomething()                   -> if err != nil { return ..., err }
 //	obj?.field                                 -> nil check + field access
 //	val ?? default                             -> if val != nil { ... } else { default }
 //	let x = 1                                  -> x := 1
+//	let (a, b) = f()                           -> a, b := f()
+//	cond ? trueVal : falseVal                  -> IIFE ternary
 //	fn(x) x * 2                               -> func(x) { return x * 2 }
+//	Result[T] / Option[T]                      -> auto-injected generic types
 func Grammar() *GrammarType {
 	return ExtendGrammar("ferrous_wheel", GoGrammar(), func(g *GrammarType) {
 
@@ -50,10 +54,24 @@ func Grammar() *GrammarType {
 			Str("}"),
 		))
 
+		// --- ternary expression ---
+		// cond ? trueVal : falseVal
+		// PrecRight(1) so nested ternaries associate right:
+		//   a ? b : c ? d : e  =>  a ? b : (c ? d : e)
+		g.Define("ternary_expression", PrecRight(1, Seq(
+			Field("condition", Sym("_expression")),
+			Str("?"),
+			Field("consequence", Sym("_expression")),
+			Str(":"),
+			Field("alternative", Sym("_expression")),
+		)))
+
 		// --- match expression ---
 		// match expr { Pattern => body, ... }
+		// Match arms support optional guard clauses: pattern if guard => body
 		g.Define("match_arm", Seq(
 			Field("pattern", Sym("_expression")),
+			Optional(Seq(Str("if"), Field("guard", Sym("_expression")))),
 			Str("=>"),
 			Field("body", Choice(Sym("block"), Sym("_expression"))),
 		))
@@ -111,6 +129,17 @@ func Grammar() *GrammarType {
 			Field("value", Sym("_expression")),
 		))
 
+		// --- let multi-assignment: let (a, b) = f() ---
+		// Transpiles to: a, b := f()
+		g.Define("let_multi_declaration", Seq(
+			Str("let"),
+			Str("("),
+			CommaSep1(Sym("identifier")),
+			Str(")"),
+			Str("="),
+			Field("value", Sym("_expression")),
+		))
+
 		// --- lambda: fn(params) body ---
 		// Uses fn keyword to avoid conflict with bitwise OR operator |.
 		// fn(x, y) x + y  or  fn(x) { return x * 2 }
@@ -142,16 +171,22 @@ func Grammar() *GrammarType {
 			Sym("safe_navigation"),
 			Sym("error_propagation"),
 			Sym("lambda_expression"),
+			Sym("ternary_expression"),
 		)
 
 		AppendChoice(g, "_statement",
 			Sym("let_declaration"),
+			Sym("let_multi_declaration"),
 			Sym("enum_declaration"),
 			Sym("match_expression"),
 		)
 
+		// Mark new keywords as non-keyword strings
+		g.NonKeywordStrings["if"] = true // used in match guards, also Go keyword
+
 		// GLR conflicts for keyword ambiguities
 		AddConflict(g, "_statement", "let_declaration")
+		AddConflict(g, "_statement", "let_multi_declaration")
 		AddConflict(g, "_statement", "enum_declaration")
 		AddConflict(g, "_statement", "match_expression")
 		AddConflict(g, "_expression", "error_propagation")
@@ -159,6 +194,12 @@ func Grammar() *GrammarType {
 		AddConflict(g, "_expression", "null_coalesce")
 		AddConflict(g, "_expression", "lambda_expression")
 		AddConflict(g, "_expression", "match_expression")
+		AddConflict(g, "_expression", "ternary_expression")
+
+		// ternary ? vs safe_navigation ?. vs null_coalesce ??
+		AddConflict(g, "ternary_expression", "safe_navigation")
+		AddConflict(g, "ternary_expression", "null_coalesce")
+		AddConflict(g, "ternary_expression", "error_propagation")
 
 		// error_propagation ? vs safe_navigation ?. vs null_coalesce ??
 		AddConflict(g, "error_propagation", "safe_navigation")
@@ -171,6 +212,9 @@ func Grammar() *GrammarType {
 		// lambda body vs binary expression: _lambda_body with PrecRight(-100)
 		// ensures fn(x) x * 2 parses as fn(x) (x * 2)
 		AddConflict(g, "lambda_expression", "binary_expression")
+
+		// let_multi conflicts with let_declaration on the "let" keyword
+		AddConflict(g, "let_declaration", "let_multi_declaration")
 
 		g.EnableLRSplitting = true
 	})
