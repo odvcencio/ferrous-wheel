@@ -51,12 +51,14 @@ func Transpile(source []byte) (string, error) {
 }
 
 type fwTranspiler struct {
-	src            []byte
-	lang           *gotreesitter.Language
-	needsReflect   bool
-	needsFmt       bool
+	src             []byte
+	lang            *gotreesitter.Language
+	needsReflect    bool
+	needsFmt        bool
+	needsJSON       bool
 	needsResultType bool
 	needsOptionType bool
+	implReceiver    string // non-empty when inside an impl block
 }
 
 func (t *fwTranspiler) text(n *gotreesitter.Node) string {
@@ -93,6 +95,36 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitLambda(n)
 	case "call_expression":
 		return t.emitCall(n)
+	case "derive_declaration":
+		return t.emitDerive(n)
+	case "if_let_statement":
+		return t.emitIfLet(n)
+	case "range_expression":
+		return t.emitRange(n)
+	case "for_in_statement":
+		return t.emitForIn(n)
+	case "for_in_index_statement":
+		return t.emitForInIndex(n)
+	case "fstring":
+		return t.emitFString(n)
+	case "guard_statement":
+		return t.emitGuard(n)
+	case "defer_error":
+		return t.emitDeferError(n)
+	case "impl_block":
+		return t.emitImplBlock(n)
+	case "unless_statement":
+		return t.emitUnless(n)
+	case "until_statement":
+		return t.emitUntil(n)
+	case "repeat_statement":
+		return t.emitRepeat(n)
+	case "list_comprehension":
+		return t.emitListComprehension(n)
+	case "swap_statement":
+		return t.emitSwap(n)
+	case "function_declaration":
+		return t.emitFunctionDecl(n)
 	default:
 		return t.emitDefault(n)
 	}
@@ -370,6 +402,317 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 	return b.String()
 }
 
+// emitFunctionDecl handles function_declaration, injecting receiver when inside impl block.
+func (t *fwTranspiler) emitFunctionDecl(n *gotreesitter.Node) string {
+	if t.implReceiver == "" {
+		return t.emitDefault(n)
+	}
+	// Inside an impl block, add receiver to function declarations.
+	// function_declaration: func name(params) returnType { body }
+	// Transform to: func (self Type) name(params) returnType { body }
+	text := t.emitDefault(n)
+	if strings.HasPrefix(text, "func ") {
+		return "func (self " + t.implReceiver + ") " + text[5:]
+	}
+	return text
+}
+
+// derive Stringer for Color -> generate interface impl methods
+func (t *fwTranspiler) emitDerive(n *gotreesitter.Node) string {
+	traitNode := t.childByField(n, "trait")
+	typeNode := t.childByField(n, "type")
+	if traitNode == nil || typeNode == nil {
+		return t.text(n)
+	}
+	trait := t.text(traitNode)
+	typeName := t.text(typeNode)
+
+	var b strings.Builder
+	switch trait {
+	case "Stringer":
+		t.needsFmt = true
+		fmt.Fprintf(&b, "func (x %s) String() string {\n", typeName)
+		fmt.Fprintf(&b, "\treturn fmt.Sprintf(\"%s(%%v)\", x)\n", typeName)
+		b.WriteString("}\n")
+	case "JSON":
+		t.needsJSON = true
+		fmt.Fprintf(&b, "func (x %s) MarshalJSON() ([]byte, error) {\n", typeName)
+		fmt.Fprintf(&b, "\treturn json.Marshal(struct{ Value %s }{x})\n", typeName)
+		b.WriteString("}\n")
+	case "Equal":
+		fmt.Fprintf(&b, "func (x %s) Equal(other %s) bool {\n", typeName, typeName)
+		fmt.Fprintf(&b, "\treturn x == other\n")
+		b.WriteString("}\n")
+	default:
+		fmt.Fprintf(&b, "// derive %s for %s: unknown trait\n", trait, typeName)
+	}
+	return b.String()
+}
+
+// if let x = expr { body } -> if x := expr; x != nil { body }
+func (t *fwTranspiler) emitIfLet(n *gotreesitter.Node) string {
+	pattern := t.childByField(n, "pattern")
+	value := t.childByField(n, "value")
+	if pattern == nil || value == nil {
+		return t.text(n)
+	}
+	varName := t.text(pattern)
+	valExpr := t.emit(value)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "if %s := %s; %s != nil", varName, valExpr, varName)
+
+	// Find the first block (then-block)
+	blockFound := false
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "block" {
+			if !blockFound {
+				b.WriteString(" ")
+				b.WriteString(t.emit(c))
+				blockFound = true
+			} else {
+				// else block
+				b.WriteString(" else ")
+				b.WriteString(t.emit(c))
+			}
+		}
+	}
+
+	return b.String()
+}
+
+// 0..10 -> (kept as-is; used by for_in to generate range loop)
+func (t *fwTranspiler) emitRange(n *gotreesitter.Node) string {
+	start := t.childByField(n, "start")
+	end := t.childByField(n, "end")
+	if start == nil || end == nil {
+		return t.text(n)
+	}
+	// Range expression is primarily consumed by for_in; if standalone, emit as comment
+	return fmt.Sprintf("/* range %s..%s */", t.emit(start), t.emit(end))
+}
+
+// for v in iterable { body }
+func (t *fwTranspiler) emitForIn(n *gotreesitter.Node) string {
+	varNode := t.childByField(n, "var")
+	iterable := t.childByField(n, "iterable")
+	if varNode == nil || iterable == nil {
+		return t.text(n)
+	}
+
+	varName := t.text(varNode)
+
+	// Check if iterable is a range_expression (0..10)
+	if t.nodeType(iterable) == "range_expression" {
+		start := t.childByField(iterable, "start")
+		end := t.childByField(iterable, "end")
+		if start != nil && end != nil {
+			// Find the block
+			block := t.findBlock(n)
+			if block != "" {
+				return fmt.Sprintf("for %s := %s; %s < %s; %s++ %s",
+					varName, t.emit(start), varName, t.emit(end), varName, block)
+			}
+		}
+	}
+
+	// General iterable: for _, v := range iterable { body }
+	block := t.findBlock(n)
+	return fmt.Sprintf("for _, %s := range %s %s", varName, t.emit(iterable), block)
+}
+
+// for i, v in iterable { body }
+func (t *fwTranspiler) emitForInIndex(n *gotreesitter.Node) string {
+	indexNode := t.childByField(n, "index")
+	varNode := t.childByField(n, "var")
+	iterable := t.childByField(n, "iterable")
+	if indexNode == nil || varNode == nil || iterable == nil {
+		return t.text(n)
+	}
+
+	block := t.findBlock(n)
+	return fmt.Sprintf("for %s, %s := range %s %s",
+		t.text(indexNode), t.text(varNode), t.emit(iterable), block)
+}
+
+// findBlock finds the first block child node and emits it.
+func (t *fwTranspiler) findBlock(n *gotreesitter.Node) string {
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "block" {
+			return t.emit(c)
+		}
+	}
+	return "{}"
+}
+
+// f"hello {name}" -> fmt.Sprintf("hello %v", name)
+// emitFString handles f"hello {name}" -> fmt.Sprintf("hello %v", name)
+// The fstring node is a single token matching f"...", so we parse the text directly.
+func (t *fwTranspiler) emitFString(n *gotreesitter.Node) string {
+	raw := t.text(n) // e.g. f"hello {name}"
+	if len(raw) < 3 || raw[0] != 'f' || raw[1] != '"' {
+		return raw
+	}
+	inner := raw[2 : len(raw)-1] // strip f" and trailing "
+
+	t.needsFmt = true
+
+	var format strings.Builder
+	var args []string
+	i := 0
+	for i < len(inner) {
+		if inner[i] == '{' {
+			// Find matching }
+			j := i + 1
+			depth := 1
+			for j < len(inner) && depth > 0 {
+				if inner[j] == '{' {
+					depth++
+				} else if inner[j] == '}' {
+					depth--
+				}
+				j++
+			}
+			expr := inner[i+1 : j-1]
+			format.WriteString("%v")
+			args = append(args, expr)
+			i = j
+		} else {
+			format.WriteByte(inner[i])
+			i++
+		}
+	}
+
+	if len(args) == 0 {
+		return `"` + inner + `"` // no interpolation, return as regular string
+	}
+
+	return fmt.Sprintf("fmt.Sprintf(\"%s\", %s)", format.String(), strings.Join(args, ", "))
+}
+
+// guard cond else { return err } -> if !(cond) { return err }
+func (t *fwTranspiler) emitGuard(n *gotreesitter.Node) string {
+	cond := t.childByField(n, "condition")
+	if cond == nil {
+		return t.text(n)
+	}
+
+	block := t.findBlock(n)
+	return fmt.Sprintf("if !(%s) %s", t.emit(cond), block)
+}
+
+// defer! f.Close() -> defer func() { if _cerr := f.Close(); _cerr != nil && err == nil { err = _cerr } }()
+func (t *fwTranspiler) emitDeferError(n *gotreesitter.Node) string {
+	expr := t.childByField(n, "expr")
+	if expr == nil {
+		return t.text(n)
+	}
+	e := t.emit(expr)
+	return fmt.Sprintf("defer func() {\n\tif _cerr := %s; _cerr != nil && err == nil {\n\t\terr = _cerr\n\t}\n}()", e)
+}
+
+// impl Type { fn methods... } -> emit each function with (self Type) receiver
+// Since Go's block rule parses `func Name()` as func_literal (not function_declaration),
+// we extract the block text and perform string-level transformation.
+func (t *fwTranspiler) emitImplBlock(n *gotreesitter.Node) string {
+	typeNode := t.childByField(n, "type")
+	if typeNode == nil {
+		return t.text(n)
+	}
+
+	typeName := t.text(typeNode)
+
+	// Find the block child and get its text
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if t.nodeType(c) == "block" {
+			blockText := t.text(c)
+			// Strip the outer { } braces
+			if len(blockText) >= 2 && blockText[0] == '{' {
+				blockText = blockText[1 : len(blockText)-1]
+			}
+			blockText = strings.TrimSpace(blockText)
+			// Replace "func " with "func (self Type) " for each function in the block
+			receiver := fmt.Sprintf("func (self %s) ", typeName)
+			result := strings.ReplaceAll(blockText, "func ", receiver)
+			return result + "\n"
+		}
+	}
+
+	return t.text(n)
+}
+
+// unless cond { body } -> if !(cond) { body }
+func (t *fwTranspiler) emitUnless(n *gotreesitter.Node) string {
+	cond := t.childByField(n, "condition")
+	if cond == nil {
+		return t.text(n)
+	}
+	block := t.findBlock(n)
+	return fmt.Sprintf("if !(%s) %s", t.emit(cond), block)
+}
+
+// until cond { body } -> for !(cond) { body }
+func (t *fwTranspiler) emitUntil(n *gotreesitter.Node) string {
+	cond := t.childByField(n, "condition")
+	if cond == nil {
+		return t.text(n)
+	}
+	block := t.findBlock(n)
+	return fmt.Sprintf("for !(%s) %s", t.emit(cond), block)
+}
+
+// repeat 5 { body } -> for _i := 0; _i < 5; _i++ { body }
+func (t *fwTranspiler) emitRepeat(n *gotreesitter.Node) string {
+	count := t.childByField(n, "count")
+	if count == nil {
+		return t.text(n)
+	}
+	block := t.findBlock(n)
+	return fmt.Sprintf("for _i := 0; _i < %s; _i++ %s", t.emit(count), block)
+}
+
+// [x*2 for x in items if x > 0] -> IIFE with range + filter
+func (t *fwTranspiler) emitListComprehension(n *gotreesitter.Node) string {
+	expr := t.childByField(n, "expr")
+	varNode := t.childByField(n, "var")
+	iterable := t.childByField(n, "iterable")
+	filter := t.childByField(n, "filter")
+	if expr == nil || varNode == nil || iterable == nil {
+		return t.text(n)
+	}
+
+	varName := t.text(varNode)
+	var b strings.Builder
+	fmt.Fprintf(&b, "func() []interface{} {\n")
+	fmt.Fprintf(&b, "\tvar _result []interface{}\n")
+	fmt.Fprintf(&b, "\tfor _, %s := range %s {\n", varName, t.emit(iterable))
+	if filter != nil {
+		fmt.Fprintf(&b, "\t\tif %s {\n", t.emit(filter))
+		fmt.Fprintf(&b, "\t\t\t_result = append(_result, %s)\n", t.emit(expr))
+		fmt.Fprintf(&b, "\t\t}\n")
+	} else {
+		fmt.Fprintf(&b, "\t\t_result = append(_result, %s)\n", t.emit(expr))
+	}
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\treturn _result\n")
+	fmt.Fprintf(&b, "}()")
+
+	return b.String()
+}
+
+// swap(a, b) -> a, b = b, a
+func (t *fwTranspiler) emitSwap(n *gotreesitter.Node) string {
+	a := t.childByField(n, "a")
+	b := t.childByField(n, "b")
+	if a == nil || b == nil {
+		return t.text(n)
+	}
+	return fmt.Sprintf("%s, %s = %s, %s", t.emit(a), t.emit(b), t.emit(b), t.emit(a))
+}
+
 // detectGenericTypes scans transpiled output for Result[T] and Option[T] usage.
 func (t *fwTranspiler) detectGenericTypes(code string) {
 	if strings.Contains(code, "Result[") || strings.Contains(code, "Ok[") || strings.Contains(code, "Err[") {
@@ -472,6 +815,9 @@ func (t *fwTranspiler) injectImports(code string) string {
 	}
 	if t.needsFmt && !strings.Contains(code, `"fmt"`) {
 		needed = append(needed, `"fmt"`)
+	}
+	if t.needsJSON && !strings.Contains(code, `"encoding/json"`) {
+		needed = append(needed, `"encoding/json"`)
 	}
 	if len(needed) == 0 {
 		return code

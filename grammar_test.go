@@ -352,3 +352,293 @@ func f() {
 		t.Error("expected match_arm")
 	}
 }
+
+// === New Feature Parse Tests ===
+
+func TestDerive(t *testing.T) {
+	sexp := parseFW(t, `package main
+derive Stringer for Color
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "derive_declaration") {
+		t.Error("expected derive_declaration")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestDeriveJSON(t *testing.T) {
+	sexp := parseFW(t, `package main
+derive JSON for Config
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "derive_declaration") {
+		t.Error("expected derive_declaration")
+	}
+}
+
+func TestDeriveEqual(t *testing.T) {
+	sexp := parseFW(t, `package main
+derive Equal for Point
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "derive_declaration") {
+		t.Error("expected derive_declaration")
+	}
+}
+
+func TestIfLet(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	if let x = getValue() {
+		_ = x
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "if_let_statement") {
+		t.Error("expected if_let_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestIfLetElse(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	if let x = getValue() {
+		_ = x
+	} else {
+		panic("nil")
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "if_let_statement") {
+		t.Error("expected if_let_statement")
+	}
+}
+
+func TestForIn(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	for v in items {
+		_ = v
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "for_in_statement") {
+		t.Error("expected for_in_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestForInRange(t *testing.T) {
+	// Note: spaces around ".." are required to avoid Go float literal conflict
+	sexp := parseFW(t, `package main
+func f() {
+	for i in 0 .. 10 {
+		_ = i
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "for_in_statement") {
+		t.Error("expected for_in_statement")
+	}
+	if !strings.Contains(sexp, "range_expression") {
+		t.Error("expected range_expression")
+	}
+}
+
+func TestForInIndex(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	for i, v in items {
+		_ = i
+		_ = v
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "for_in_index_statement") {
+		t.Error("expected for_in_index_statement")
+	}
+}
+
+func TestFString(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	x := f"hello {name}"
+	_ = x
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "fstring") {
+		t.Error("expected fstring")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestGuard(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	guard x > 0 else {
+		return
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "guard_statement") {
+		t.Error("expected guard_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestDeferError(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	defer! f.Close()
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "defer_error") {
+		t.Error("expected defer_error")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestImplBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+impl Point {
+	func Area() int {
+		return 0
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "impl_block") {
+		t.Error("expected impl_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestUnless(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	unless x > 0 {
+		return
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "unless_statement") {
+		t.Error("expected unless_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestUntil(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	until x > 10 {
+		x = x + 1
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "until_statement") {
+		t.Error("expected until_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestRepeat(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	repeat 5 {
+		fmt.Println("hi")
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "repeat_statement") {
+		t.Error("expected repeat_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestListComprehension(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	x := [x for x in items]
+	_ = x
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "list_comprehension") {
+		t.Error("expected list_comprehension")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestListComprehensionFilter(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	x := [x for x in items if x > 0]
+	_ = x
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "list_comprehension") {
+		t.Error("expected list_comprehension")
+	}
+}
+
+func TestSwap(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	swap(a, b)
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "swap_statement") {
+		t.Error("expected swap_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestDeriveInFunction(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	derive Stringer for Color
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "derive_declaration") {
+		t.Error("expected derive_declaration in function body")
+	}
+}

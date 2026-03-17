@@ -16,6 +16,18 @@ package ferrouswheel
 //	cond ? trueVal : falseVal                  -> IIFE ternary
 //	fn(x) x * 2                               -> func(x) { return x * 2 }
 //	Result[T] / Option[T]                      -> auto-injected generic types
+//	derive Stringer for Color                  -> auto-generate interface impls
+//	if let x = expr { ... }                    -> pattern destructuring
+//	for i in 0..10 { }                         -> range-based for loops
+//	f"hello {name}"                            -> fmt.Sprintf interpolation
+//	guard cond else return err                 -> early return
+//	defer! f.Close()                           -> error-capturing defer
+//	impl Type { fn ... }                       -> method grouping
+//	unless cond { }                            -> negated if
+//	until cond { }                             -> negated for
+//	repeat 5 { }                               -> counted loop
+//	[x*2 for x in items if x > 0]             -> slice comprehension
+//	swap(a, b)                                 -> tuple swap
 func Grammar() *GrammarType {
 	return ExtendGrammar("ferrous_wheel", GoGrammar(), func(g *GrammarType) {
 
@@ -160,9 +172,144 @@ func Grammar() *GrammarType {
 			Field("body", Choice(Sym("block"), Sym("_lambda_body"))),
 		)))
 
+		// --- derive declaration ---
+		// derive Stringer for Color
+		g.Define("derive_declaration", Seq(
+			Str("derive"),
+			Field("trait", Sym("identifier")),
+			Str("for"),
+			Field("type", Sym("identifier")),
+		))
+
+		// --- if let statement ---
+		// if let x = expr { body } else { body }
+		g.Define("if_let_statement", Seq(
+			Str("if"),
+			Str("let"),
+			Field("pattern", Sym("identifier")),
+			Str("="),
+			Field("value", Sym("_expression")),
+			Sym("block"),
+			Optional(Seq(Str("else"), Sym("block"))),
+		))
+
+		// --- range expression ---
+		// 0..10
+		// Use Token for ".." to avoid conflict with Go's "." selector and float parsing.
+		g.Define("_fw_range_op", Token(Seq(Str("."), Str("."))))
+
+		g.Define("range_expression", PrecLeft(3, Seq(
+			Field("start", Sym("_expression")),
+			Sym("_fw_range_op"),
+			Field("end", Sym("_expression")),
+		)))
+
+		// --- for in statement (single variable) ---
+		// for v in iterable { body }
+		g.Define("for_in_statement", Seq(
+			Str("for"),
+			Field("var", Sym("identifier")),
+			Str("in"),
+			Field("iterable", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// --- for in with index ---
+		// for i, v in iterable { body }
+		g.Define("for_in_index_statement", Seq(
+			Str("for"),
+			Field("index", Sym("identifier")),
+			Str(","),
+			Field("var", Sym("identifier")),
+			Str("in"),
+			Field("iterable", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// --- f-string ---
+		// f"hello {name}, you are {age} years old"
+		// Defined as a single token pattern to avoid "f" conflicting with identifiers.
+		g.Define("fstring", Token(Pat(`f"[^"]*"`)))
+
+		// --- guard statement ---
+		// guard cond else return err
+		g.Define("guard_statement", Seq(
+			Str("guard"),
+			Field("condition", Sym("_expression")),
+			Str("else"),
+			Sym("block"),
+		))
+
+		// --- defer! error-capturing defer ---
+		// defer! f.Close()
+		g.Define("_fw_defer_bang", Token(Seq(Str("defer"), Str("!"))))
+
+		g.Define("defer_error", Seq(
+			Sym("_fw_defer_bang"),
+			Field("expr", Sym("_expression")),
+		))
+
+		// --- impl block ---
+		// impl Type { fn methods... }
+		g.Define("impl_block", Seq(
+			Str("impl"),
+			Field("type", Sym("identifier")),
+			Sym("block"),
+		))
+
+		// --- unless statement ---
+		// unless cond { body }
+		g.Define("unless_statement", Seq(
+			Str("unless"),
+			Field("condition", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// --- until statement ---
+		// until cond { body }
+		g.Define("until_statement", Seq(
+			Str("until"),
+			Field("condition", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// --- repeat statement ---
+		// repeat 5 { body }
+		g.Define("repeat_statement", Seq(
+			Str("repeat"),
+			Field("count", Sym("_expression")),
+			Sym("block"),
+		))
+
+		// --- list comprehension ---
+		// [x * 2 for x in items if x > 0]
+		g.Define("list_comprehension", Seq(
+			Str("["),
+			Field("expr", Sym("_expression")),
+			Str("for"),
+			Field("var", Sym("identifier")),
+			Str("in"),
+			Field("iterable", Sym("_expression")),
+			Optional(Seq(Str("if"), Field("filter", Sym("_expression")))),
+			Str("]"),
+		))
+
+		// --- swap statement ---
+		// swap(a, b)
+		g.Define("swap_statement", Seq(
+			Str("swap"),
+			Str("("),
+			Field("a", Sym("_expression")),
+			Str(","),
+			Field("b", Sym("_expression")),
+			Str(")"),
+		))
+
 		// Wire into grammar
 		AppendChoice(g, "_top_level_declaration",
 			Sym("enum_declaration"),
+			Sym("derive_declaration"),
+			Sym("impl_block"),
 		)
 
 		AppendChoice(g, "_expression",
@@ -172,6 +319,9 @@ func Grammar() *GrammarType {
 			Sym("error_propagation"),
 			Sym("lambda_expression"),
 			Sym("ternary_expression"),
+			Sym("range_expression"),
+			Sym("fstring"),
+			Sym("list_comprehension"),
 		)
 
 		AppendChoice(g, "_statement",
@@ -179,10 +329,32 @@ func Grammar() *GrammarType {
 			Sym("let_multi_declaration"),
 			Sym("enum_declaration"),
 			Sym("match_expression"),
+			Sym("if_let_statement"),
+			Sym("for_in_statement"),
+			Sym("for_in_index_statement"),
+			Sym("guard_statement"),
+			Sym("defer_error"),
+			Sym("unless_statement"),
+			Sym("until_statement"),
+			Sym("repeat_statement"),
+			Sym("swap_statement"),
+			Sym("derive_declaration"),
+			Sym("impl_block"),
 		)
 
 		// Mark new keywords as non-keyword strings
 		g.NonKeywordStrings["if"] = true // used in match guards, also Go keyword
+		// New feature keywords that coexist as identifiers in Go code
+		g.NonKeywordStrings["derive"] = true
+		g.NonKeywordStrings["in"] = true
+		g.NonKeywordStrings["guard"] = true
+		g.NonKeywordStrings["impl"] = true
+		g.NonKeywordStrings["unless"] = true
+		g.NonKeywordStrings["until"] = true
+		g.NonKeywordStrings["repeat"] = true
+		g.NonKeywordStrings["swap"] = true
+		// Note: "for" is NOT added — it's already a Go keyword and should be promoted
+		// Note: "f" is NOT added — fstring uses a Token(Pat(...)) so no keyword conflict
 
 		// GLR conflicts for keyword ambiguities
 		AddConflict(g, "_statement", "let_declaration")
@@ -215,6 +387,39 @@ func Grammar() *GrammarType {
 
 		// let_multi conflicts with let_declaration on the "let" keyword
 		AddConflict(g, "let_declaration", "let_multi_declaration")
+
+		// New feature conflicts
+		AddConflict(g, "_statement", "if_let_statement")
+		AddConflict(g, "_statement", "for_in_statement")
+		AddConflict(g, "_statement", "for_in_index_statement")
+		AddConflict(g, "_statement", "guard_statement")
+		AddConflict(g, "_statement", "defer_error")
+		AddConflict(g, "_statement", "unless_statement")
+		AddConflict(g, "_statement", "until_statement")
+		AddConflict(g, "_statement", "repeat_statement")
+		AddConflict(g, "_statement", "swap_statement")
+		AddConflict(g, "_statement", "derive_declaration")
+		AddConflict(g, "_statement", "impl_block")
+		AddConflict(g, "_expression", "range_expression")
+		AddConflict(g, "_expression", "list_comprehension")
+
+		// range_expression ".." vs other binary operators
+		AddConflict(g, "range_expression", "binary_expression")
+		AddConflict(g, "ternary_expression", "range_expression")
+
+		// for_in conflicts with for_in_index on "for" keyword
+		AddConflict(g, "for_in_statement", "for_in_index_statement")
+
+		// if_let starts with "if" like Go's if_statement
+		AddConflict(g, "if_let_statement", "if_statement")
+
+		// list_comprehension has "for" and "if" inside expressions
+		AddConflict(g, "list_comprehension", "_expression")
+		AddConflict(g, "list_comprehension", "for_in_statement")
+
+		// impl_block has block like function_declaration
+		AddConflict(g, "_top_level_declaration", "impl_block")
+		AddConflict(g, "_top_level_declaration", "derive_declaration")
 
 		g.EnableLRSplitting = true
 	})

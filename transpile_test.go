@@ -422,3 +422,409 @@ func f() {
 		t.Error("expected match guard transpilation")
 	}
 }
+
+// === New Feature Transpile Tests ===
+
+func TestTranspileDerive(t *testing.T) {
+	source := []byte(`package main
+derive Stringer for Color
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func (x Color) String() string") {
+		t.Error("expected Stringer method")
+	}
+	if strings.Contains(goCode, "derive") {
+		t.Error("should not contain 'derive' keyword in output")
+	}
+}
+
+func TestTranspileDeriveJSON(t *testing.T) {
+	source := []byte(`package main
+derive JSON for Config
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func (x Config) MarshalJSON() ([]byte, error)") {
+		t.Error("expected MarshalJSON method")
+	}
+	if !strings.Contains(goCode, "json.Marshal") {
+		t.Error("expected json.Marshal call")
+	}
+}
+
+func TestTranspileDeriveEqual(t *testing.T) {
+	source := []byte(`package main
+derive Equal for Point
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func (x Point) Equal(other Point) bool") {
+		t.Error("expected Equal method")
+	}
+	if !strings.Contains(goCode, "return x == other") {
+		t.Error("expected equality check")
+	}
+}
+
+func TestTranspileIfLet(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	if let x = getValue() {
+		_ = x
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "if x := getValue(); x != nil") {
+		t.Errorf("expected 'if x := getValue(); x != nil', got:\n%s", goCode)
+	}
+	if strings.Contains(goCode, "let") {
+		t.Error("should not contain 'let' in output")
+	}
+}
+
+func TestTranspileIfLetElse(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	if let x = getValue() {
+		_ = x
+	} else {
+		panic("nil")
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "x != nil") {
+		t.Error("expected nil check")
+	}
+	if !strings.Contains(goCode, "else") {
+		t.Error("expected else block")
+	}
+}
+
+func TestTranspileForIn(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	for v in items {
+		_ = v
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "for _, v := range items") {
+		t.Errorf("expected 'for _, v := range items', got:\n%s", goCode)
+	}
+	if strings.Contains(goCode, " in ") {
+		t.Error("should not contain 'in' keyword in output")
+	}
+}
+
+func TestTranspileForInRange(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	for i in 0 .. 10 {
+		_ = i
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "for i := 0; i < 10; i++") {
+		t.Errorf("expected C-style for loop, got:\n%s", goCode)
+	}
+}
+
+func TestTranspileForInIndex(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	for i, v in items {
+		_ = i
+		_ = v
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "for i, v := range items") {
+		t.Errorf("expected 'for i, v := range items', got:\n%s", goCode)
+	}
+}
+
+func TestTranspileFString(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	x := f"hello {name}"
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "fmt.Sprintf") {
+		t.Error("expected fmt.Sprintf")
+	}
+	if !strings.Contains(goCode, "hello %v") {
+		t.Error("expected format string with percent-v placeholder")
+	}
+	if !strings.Contains(goCode, "name") {
+		t.Error("expected name argument")
+	}
+}
+
+func TestTranspileFStringNoInterpolation(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	x := f"hello world"
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, `"hello world"`) {
+		t.Error("expected plain string when no interpolation")
+	}
+}
+
+func TestTranspileGuard(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	guard x > 0 else {
+		return
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "if !(x > 0)") {
+		t.Errorf("expected negated condition, got:\n%s", goCode)
+	}
+	if !strings.Contains(goCode, "return") {
+		t.Error("expected return in guard body")
+	}
+	if strings.Contains(goCode, "guard") {
+		t.Error("should not contain 'guard' in output")
+	}
+}
+
+func TestTranspileDeferError(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	defer! f.Close()
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "defer func()") {
+		t.Error("expected defer func()")
+	}
+	if !strings.Contains(goCode, "_cerr") {
+		t.Error("expected _cerr variable in error-capturing defer")
+	}
+	if !strings.Contains(goCode, "f.Close()") {
+		t.Error("expected f.Close() call")
+	}
+}
+
+func TestTranspileImplBlock(t *testing.T) {
+	source := []byte(`package main
+impl Point {
+	func Area() int {
+		return 0
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func (self Point)") {
+		t.Errorf("expected receiver on function, got:\n%s", goCode)
+	}
+	if strings.Contains(goCode, "impl") {
+		t.Error("should not contain 'impl' in output")
+	}
+}
+
+func TestTranspileUnless(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	unless x > 0 {
+		return
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "if !(x > 0)") {
+		t.Errorf("expected negated if, got:\n%s", goCode)
+	}
+	if strings.Contains(goCode, "unless") {
+		t.Error("should not contain 'unless' in output")
+	}
+}
+
+func TestTranspileUntil(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	until x > 10 {
+		x = x + 1
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "for !(x > 10)") {
+		t.Errorf("expected negated for, got:\n%s", goCode)
+	}
+	if strings.Contains(goCode, "until") {
+		t.Error("should not contain 'until' in output")
+	}
+}
+
+func TestTranspileRepeat(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	repeat 5 {
+		fmt.Println("hi")
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "for _i := 0; _i < 5; _i++") {
+		t.Errorf("expected counted for loop, got:\n%s", goCode)
+	}
+	if strings.Contains(goCode, "repeat") {
+		t.Error("should not contain 'repeat' in output")
+	}
+}
+
+func TestTranspileListComprehension(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	x := [x for x in items]
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func() []interface{}") {
+		t.Error("expected IIFE returning slice")
+	}
+	if !strings.Contains(goCode, "range items") {
+		t.Error("expected range over items")
+	}
+	if !strings.Contains(goCode, "_result = append(_result") {
+		t.Error("expected append to result")
+	}
+}
+
+func TestTranspileListComprehensionFilter(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	x := [x for x in items if x > 0]
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "if x > 0") {
+		t.Error("expected filter condition")
+	}
+	if !strings.Contains(goCode, "range items") {
+		t.Error("expected range over items")
+	}
+}
+
+func TestTranspileSwap(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	swap(a, b)
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "a, b = b, a") {
+		t.Errorf("expected 'a, b = b, a', got:\n%s", goCode)
+	}
+	if strings.Contains(goCode, "swap") {
+		t.Error("should not contain 'swap' in output")
+	}
+}
