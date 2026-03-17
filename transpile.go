@@ -1257,19 +1257,38 @@ func (t *fwTranspiler) emitBreaker(n *gotreesitter.Node) string {
 		return t.text(n)
 	}
 	t.needsTime = true
+	t.needsSync = true
 
 	nameStr := t.text(nameNode)
-	// Sanitize the name for variable use (strip quotes)
 	varName := strings.Trim(nameStr, `"`)
+	varName = strings.NewReplacer("-", "_", " ", "_").Replace(varName)
 	block := t.findBlock(n)
 
+	// Configurable: breaker "name" threshold 10 cooldown 60 { }
+	// Defaults: 5 failures, 30 seconds cooldown
+	threshold := "5"
+	cooldown := "30"
+	if th := t.childByField(n, "threshold"); th != nil {
+		threshold = t.emit(th)
+	}
+	if cd := t.childByField(n, "cooldown"); cd != nil {
+		cooldown = t.emit(cd)
+	}
+
 	var b strings.Builder
-	fmt.Fprintf(&b, "// Circuit breaker for %s\n", nameStr)
-	fmt.Fprintf(&b, "if _breaker_%s_failures >= 5 && time.Since(_breaker_%s_lastFail) < 30*time.Second {\n", varName, varName)
-	fmt.Fprintf(&b, "\t// circuit open - skip\n")
-	fmt.Fprintf(&b, "} else {\n")
+	fmt.Fprintf(&b, "// Circuit breaker %s (threshold: %s failures, cooldown: %ss)\n", nameStr, threshold, cooldown)
+	fmt.Fprintf(&b, "var _breaker_%s_mu sync.Mutex\n", varName)
+	fmt.Fprintf(&b, "var _breaker_%s_failures int\n", varName)
+	fmt.Fprintf(&b, "var _breaker_%s_lastFail time.Time\n", varName)
+	fmt.Fprintf(&b, "_breaker_%s_mu.Lock()\n", varName)
+	fmt.Fprintf(&b, "_breaker_%s_open := _breaker_%s_failures >= %s && time.Since(_breaker_%s_lastFail) < %s*time.Second\n",
+		varName, varName, threshold, varName, cooldown)
+	fmt.Fprintf(&b, "_breaker_%s_mu.Unlock()\n", varName)
+	fmt.Fprintf(&b, "if !_breaker_%s_open {\n", varName)
 	fmt.Fprintf(&b, "\tfunc() {\n")
 	fmt.Fprintf(&b, "\t\tdefer func() {\n")
+	fmt.Fprintf(&b, "\t\t\t_breaker_%s_mu.Lock()\n", varName)
+	fmt.Fprintf(&b, "\t\t\tdefer _breaker_%s_mu.Unlock()\n", varName)
 	fmt.Fprintf(&b, "\t\t\tif r := recover(); r != nil {\n")
 	fmt.Fprintf(&b, "\t\t\t\t_breaker_%s_failures++\n", varName)
 	fmt.Fprintf(&b, "\t\t\t\t_breaker_%s_lastFail = time.Now()\n", varName)

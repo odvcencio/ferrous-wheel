@@ -443,9 +443,13 @@ func Grammar() *GrammarType {
 
 		// --- breaker: circuit breaker ---
 		// breaker "service" { body }
+		// breaker "name" { } — defaults: threshold=5, cooldown=30s
+		// breaker "name" threshold 10 cooldown 60 { } — explicit config
 		g.Define("breaker_block", Seq(
 			Str("breaker"),
 			Field("name", Sym("_string_literal")),
+			Optional(Seq(Str("threshold"), Field("threshold", Sym("_expression")))),
+			Optional(Seq(Str("cooldown"), Field("cooldown", Sym("_expression")))),
 			Sym("block"),
 		))
 
