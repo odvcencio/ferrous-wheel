@@ -6,7 +6,7 @@ Built on [gotreesitter](https://github.com/odvcencio/gotreesitter)'s `grammargen
 
 ## Quick taste
 
-```
+```fw
 package main
 
 import "fmt"
