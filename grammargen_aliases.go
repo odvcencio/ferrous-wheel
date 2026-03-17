@@ -70,3 +70,6 @@ var (
 	RulePrecDynamic = grammargen.RulePrecDynamic
 	RuleAlias       = grammargen.RuleAlias
 )
+
+// GenerateHighlightQueries re-exports the highlight query generator.
+var GenerateHighlightQueries = grammargen.GenerateHighlightQueries
