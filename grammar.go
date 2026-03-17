@@ -412,7 +412,7 @@ func Grammar() *GrammarType {
 		// --- pipeline: chained channel processing ---
 		// data |> filter(valid) |> transform(normalize)
 		g.Define("_pipe_op", Token(Seq(Str("|"), Str(">"))))
-		g.Define("pipeline_expression", PrecLeft(1, Seq(
+		g.Define("pipeline_expression", PrecLeft(-5, Seq(
 			Field("left", Sym("_expression")),
 			Sym("_pipe_op"),
 			Field("right", Sym("_expression")),

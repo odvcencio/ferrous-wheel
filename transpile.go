@@ -65,6 +65,7 @@ type fwTranspiler struct {
 	needsSync       bool
 	needsTime       bool
 	implReceiver    string // non-empty when inside an impl block
+	lastPipeValue   string // set by emitPipeline for selector reconstruction
 }
 
 func (t *fwTranspiler) text(n *gotreesitter.Node) string {
@@ -155,6 +156,8 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitFanIn(n)
 	case "pipeline_expression":
 		return t.emitPipeline(n)
+	case "selector_expression":
+		return t.emitSelectorExpression(n)
 	case "concurrent_block":
 		return t.emitConcurrent(n)
 	case "throttle_block":
@@ -1161,7 +1164,31 @@ func (t *fwTranspiler) emitPipeline(n *gotreesitter.Node) string {
 	if left == nil || right == nil {
 		return t.text(n)
 	}
+	// Simple case: `data |> transform` → `transform(data)`
 	return fmt.Sprintf("%s(%s)", t.emit(right), t.emit(left))
+}
+
+func (t *fwTranspiler) emitSelectorExpression(n *gotreesitter.Node) string {
+	if n.ChildCount() < 3 {
+		return t.emitDefault(n)
+	}
+	obj := n.Child(0)
+	field := n.Child(2) // skip the "." at index 1
+
+	// `x |> fmt.Sprint` parses as selector(pipeline(x, fmt), Sprint).
+	// Reconstruct as `fmt.Sprint(x)`.
+	if t.nodeType(obj) == "pipeline_expression" {
+		pipeLeft := t.childByField(obj, "left")
+		pipeRight := t.childByField(obj, "right")
+		if pipeLeft != nil && pipeRight != nil {
+			pipeVal := t.emit(pipeLeft)
+			pkg := t.emit(pipeRight)
+			fieldText := t.text(field)
+			return fmt.Sprintf("%s.%s(%s)", pkg, fieldText, pipeVal)
+		}
+	}
+
+	return t.emitDefault(n)
 }
 
 // concurrent { stmt1; stmt2 } -> WaitGroup wrapping each statement
