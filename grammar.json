@@ -2036,7 +2036,7 @@
               },
               {
                 "type": "STRING",
-                "value": "\u003c-"
+                "value": "<-"
               },
               {
                 "content": {
@@ -2054,7 +2054,7 @@
               "members": [
                 {
                   "type": "STRING",
-                  "value": "\u003c-"
+                  "value": "<-"
                 },
                 {
                   "type": "STRING",
@@ -2480,7 +2480,7 @@
         },
         {
           "type": "STRING",
-          "value": "\u003c-"
+          "value": "<-"
         },
         {
           "content": {
@@ -2593,19 +2593,19 @@
               },
               {
                 "type": "STRING",
-                "value": "\u003c\u003c="
+                "value": "<<="
               },
               {
                 "type": "STRING",
-                "value": "\u003e\u003e="
+                "value": ">>="
               },
               {
                 "type": "STRING",
-                "value": "\u0026="
+                "value": "&="
               },
               {
                 "type": "STRING",
-                "value": "\u0026^="
+                "value": "&^="
               },
               {
                 "type": "STRING",
@@ -4459,11 +4459,11 @@
                 },
                 {
                   "type": "STRING",
-                  "value": "\u0026"
+                  "value": "&"
                 },
                 {
                   "type": "STRING",
-                  "value": "\u003c-"
+                  "value": "<-"
                 }
               ],
               "type": "CHOICE"
@@ -4515,19 +4515,19 @@
                     },
                     {
                       "type": "STRING",
-                      "value": "\u003c\u003c"
+                      "value": "<<"
                     },
                     {
                       "type": "STRING",
-                      "value": "\u003e\u003e"
+                      "value": ">>"
                     },
                     {
                       "type": "STRING",
-                      "value": "\u0026"
+                      "value": "&"
                     },
                     {
                       "type": "STRING",
-                      "value": "\u0026^"
+                      "value": "&^"
                     }
                   ],
                   "type": "CHOICE"
@@ -4623,19 +4623,19 @@
                     },
                     {
                       "type": "STRING",
-                      "value": "\u003c"
+                      "value": "<"
                     },
                     {
                       "type": "STRING",
-                      "value": "\u003c="
+                      "value": "<="
                     },
                     {
                       "type": "STRING",
-                      "value": "\u003e"
+                      "value": ">"
                     },
                     {
                       "type": "STRING",
-                      "value": "\u003e="
+                      "value": ">="
                     }
                   ],
                   "type": "CHOICE"
@@ -4671,7 +4671,7 @@
               {
                 "content": {
                   "type": "STRING",
-                  "value": "\u0026\u0026"
+                  "value": "&&"
                 },
                 "name": "operator",
                 "type": "FIELD"
@@ -7369,7 +7369,7 @@
         },
         {
           "type": "STRING",
-          "value": "=\u003e"
+          "value": "=>"
         },
         {
           "content": {
@@ -8425,7 +8425,7 @@
             },
             {
               "type": "STRING",
-              "value": "=\u003e"
+              "value": "=>"
             },
             {
               "content": {
@@ -8454,7 +8454,7 @@
             },
             {
               "type": "STRING",
-              "value": "=\u003e"
+              "value": "=>"
             },
             {
               "content": {
@@ -8475,7 +8475,7 @@
             },
             {
               "type": "STRING",
-              "value": "=\u003e"
+              "value": "=>"
             },
             {
               "content": {
@@ -8632,7 +8632,7 @@
           },
           {
             "type": "STRING",
-            "value": "\u003e"
+            "value": ">"
           }
         ],
         "type": "SEQ"
@@ -9057,5 +9057,8 @@
     "_simple_type",
     "_statement",
     "_simple_statement"
+  ],
+  "file_extensions": [
+    ".fw"
   ]
 }
