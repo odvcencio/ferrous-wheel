@@ -3992,8 +3992,21 @@
           "value": "else"
         },
         {
-          "name": "block",
-          "type": "SYMBOL"
+          "content": {
+            "members": [
+              {
+                "name": "block",
+                "type": "SYMBOL"
+              },
+              {
+                "name": "_statement",
+                "type": "SYMBOL"
+              }
+            ],
+            "type": "CHOICE"
+          },
+          "name": "body",
+          "type": "FIELD"
         }
       ],
       "type": "SEQ"
@@ -6528,7 +6541,7 @@
         },
         {
           "content": {
-            "name": "_string_literal",
+            "name": "_expression",
             "type": "SYMBOL"
           },
           "name": "path",

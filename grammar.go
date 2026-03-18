@@ -237,7 +237,7 @@ func Grammar() *GrammarType {
 			Str("guard"),
 			Field("condition", Sym("_expression")),
 			Str("else"),
-			Sym("block"),
+			Field("body", Choice(Sym("block"), Sym("_statement"))),
 		))
 
 		// --- defer! error-capturing defer ---
@@ -346,7 +346,7 @@ func Grammar() *GrammarType {
 		g.Define("mmap_block", Seq(
 			Str("mmap"),
 			Str("file"),
-			Field("path", Sym("_string_literal")),
+			Field("path", Sym("_expression")),
 			Str("as"),
 			Field("name", Sym("identifier")),
 			Field("type", Sym("_type")),

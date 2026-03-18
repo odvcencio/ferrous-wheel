@@ -96,7 +96,7 @@
 (mmap_block "file" @keyword)
 (mmap_block "as" @keyword)
 (mmap_block name: (identifier) @variable.definition)
-(mmap_block path: (_) @string)
+(mmap_block path: (_) @variable)
 
 (packed_annotation "packed" @attribute)
 (vectorize_statement "vectorize" @attribute)
