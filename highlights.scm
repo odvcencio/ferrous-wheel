@@ -1,4 +1,3 @@
-;; Extension: ferrous_wheel (extends go)
 ;; Ferrous Wheel highlight queries — all parent-scoped for reliability.
 
 ;; ─── Type system ─────────────────────────────────────────────────────────────
