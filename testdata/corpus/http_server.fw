@@ -1,0 +1,34 @@
+package main
+
+import "fmt"
+
+enum Status {
+	Ok,
+	NotFound,
+	ServerError,
+}
+
+derive Stringer for Status
+
+impl Status {
+	func isSuccess() bool {
+		return true
+	}
+}
+
+func handleRequest(path string) string {
+	let result = match path {
+		"/" => "home",
+		"/about" => "about",
+	}
+	return result
+}
+
+func main() {
+	let result = match 1 {
+		1 => "ok",
+		2 => "not found",
+	}
+	fmt.Println(result)
+	fmt.Println(handleRequest("/"))
+}
