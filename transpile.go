@@ -276,7 +276,18 @@ func validateNoUnparsedText(root *gotreesitter.Node, src []byte) error {
 }
 
 // Transpile converts .fw source to valid Go code.
+// TranspileOptions configures the transpilation process.
+type TranspileOptions struct {
+	SourceFile string // original .fw filename for //line directives
+}
+
+// Transpile converts .fw source to valid Go code.
 func Transpile(source []byte) (string, error) {
+	return TranspileWithOptions(source, TranspileOptions{})
+}
+
+// TranspileWithOptions converts .fw source to valid Go code with configurable options.
+func TranspileWithOptions(source []byte, opts TranspileOptions) (string, error) {
 	lang, err := getFWLanguage()
 	if err != nil {
 		return "", fmt.Errorf("generate ferrous-wheel language: %w", err)
@@ -305,7 +316,7 @@ func Transpile(source []byte) (string, error) {
 		return "", err
 	}
 
-	t := &fwTranspiler{src: source, lang: lang}
+	t := &fwTranspiler{src: source, lang: lang, sourceFile: opts.SourceFile}
 	result := t.emit(root)
 
 	// Detect Result[T] and Option[T] usage in the transpiled output
@@ -320,6 +331,7 @@ func Transpile(source []byte) (string, error) {
 type fwTranspiler struct {
 	src             []byte
 	lang            *gotreesitter.Language
+	sourceFile      string // original .fw filename for //line directives
 	needsReflect    bool
 	needsFmt        bool
 	needsJSON       bool
@@ -669,6 +681,7 @@ func (t *fwTranspiler) emitDefault(n *gotreesitter.Node) string {
 //	func Green() Color { return Color{tag: 1} }
 //	func Blue(v0 int) Color { return Color{tag: 2, blue0: v0} }
 func (t *fwTranspiler) emitEnum(n *gotreesitter.Node) string {
+	directive := t.emitLineDirective(n)
 	name := "Enum"
 	if nameNode := t.childByField(n, "name"); nameNode != nil {
 		name = t.text(nameNode)
@@ -734,7 +747,7 @@ func (t *fwTranspiler) emitEnum(n *gotreesitter.Node) string {
 		}
 	}
 
-	return b.String()
+	return directive + b.String()
 }
 
 // let x = 1 -> x := 1
@@ -910,17 +923,18 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 
 // emitFunctionDecl handles function_declaration, injecting receiver when inside impl block.
 func (t *fwTranspiler) emitFunctionDecl(n *gotreesitter.Node) string {
+	directive := t.emitLineDirective(n)
 	text := t.emitCallableWithTryTarget(n)
 	if t.implReceiver == "" {
-		return text
+		return directive + text
 	}
 	// Inside an impl block, add receiver to function declarations.
 	// function_declaration: func name(params) returnType { body }
 	// Transform to: func (self Type) name(params) returnType { body }
 	if strings.HasPrefix(text, "func ") {
-		return "func (self " + t.implReceiver + ") " + text[5:]
+		return directive + "func (self " + t.implReceiver + ") " + text[5:]
 	}
-	return text
+	return directive + text
 }
 
 func (t *fwTranspiler) emitMethodDecl(n *gotreesitter.Node) string {
@@ -1182,6 +1196,7 @@ func (t *fwTranspiler) emitDeferError(n *gotreesitter.Node) string {
 // Since Go's block rule parses `func Name()` as func_literal (not function_declaration),
 // we extract the block text and perform string-level transformation.
 func (t *fwTranspiler) emitImplBlock(n *gotreesitter.Node) string {
+	directive := t.emitLineDirective(n)
 	typeNode := t.childByField(n, "type")
 	if typeNode == nil {
 		return t.text(n)
@@ -1202,7 +1217,7 @@ func (t *fwTranspiler) emitImplBlock(n *gotreesitter.Node) string {
 			// Replace "func " with "func (self Type) " for each function in the block
 			receiver := fmt.Sprintf("func (self %s) ", typeName)
 			result := strings.ReplaceAll(blockText, "func ", receiver)
-			return result + "\n"
+			return directive + result + "\n"
 		}
 	}
 

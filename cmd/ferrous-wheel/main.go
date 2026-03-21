@@ -125,7 +125,9 @@ func transpileFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
-	goCode, err := ferrouswheel.Transpile(source)
+	goCode, err := ferrouswheel.TranspileWithOptions(source, ferrouswheel.TranspileOptions{
+		SourceFile: filepath.Base(path),
+	})
 	if err != nil {
 		return "", fmt.Errorf("transpile %s: %w", path, err)
 	}
