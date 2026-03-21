@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+func main() {
+	let items = []int{1, 2, 3, 4, 5}
+
+	for i, v in items {
+		fmt.Println(f"items[{i}] = {v}")
+	}
+
+	let a = 10
+	let b = 20
+	swap(a, b)
+	fmt.Println(f"a={a}, b={b}")
+}

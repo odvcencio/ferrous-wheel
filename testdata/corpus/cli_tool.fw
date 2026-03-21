@@ -1,0 +1,20 @@
+package main
+
+import "fmt"
+
+func greet(name string) string {
+	guard name != "" else {
+		return "Hello, stranger!"
+	}
+	return f"Hello, {name}!"
+}
+
+func main() {
+	let name = "World"
+	let greeting = greet(name)
+	fmt.Println(greeting)
+
+	unless name == "" {
+		fmt.Println(f"Name is: {name}")
+	}
+}

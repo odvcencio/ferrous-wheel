@@ -1,0 +1,23 @@
+package main
+
+import "fmt"
+
+func riskyOp() string {
+	return "success"
+}
+
+func main() {
+	retry 3 {
+		fmt.Println("attempting operation")
+	}
+
+	if let v = getValue() {
+		fmt.Println(v)
+	}
+
+	let x = 0
+	until x > 5 {
+		x = x + 1
+	}
+	fmt.Println(f"final x = {x}")
+}

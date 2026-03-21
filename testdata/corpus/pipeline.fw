@@ -1,0 +1,20 @@
+package main
+
+import "fmt"
+
+func double(x int) int {
+	return x * 2
+}
+
+func main() {
+	for i in 0 .. 5 {
+		fmt.Println(i)
+	}
+
+	repeat 3 {
+		fmt.Println("tick")
+	}
+
+	let result = 5 |> double
+	fmt.Println(result)
+}
