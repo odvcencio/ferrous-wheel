@@ -98,3 +98,18 @@ func (e *TypeEnv) LookupFieldType(structName, fieldName string) (Type, error) {
 	}
 	return ft, nil
 }
+
+// SetFilename sets the file name used in error messages.
+func (e *TypeEnv) SetFilename(name string) { e.filename = name }
+
+// Funcs returns the registered function types.
+func (e *TypeEnv) Funcs() map[string]*FuncType { return e.funcs }
+
+// Structs returns the registered struct types.
+func (e *TypeEnv) Structs() map[string]*StructType { return e.structs }
+
+// Enums returns the registered enum types.
+func (e *TypeEnv) Enums() map[string]*EnumType { return e.enums }
+
+// Imports returns the import scopes.
+func (e *TypeEnv) Imports() map[string]ImportScope { return e.imports }

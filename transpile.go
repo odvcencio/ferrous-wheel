@@ -15,6 +15,11 @@ var (
 	fwLangErr    error
 )
 
+// GetFWLanguage returns the cached ferrous-wheel tree-sitter language.
+func GetFWLanguage() (*gotreesitter.Language, error) {
+	return getFWLanguage()
+}
+
 func getFWLanguage() (*gotreesitter.Language, error) {
 	fwLangOnce.Do(func() {
 		fwLangCached, fwLangErr = GenerateLanguage(Grammar())

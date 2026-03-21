@@ -260,6 +260,68 @@ func main() {}`)
 	}
 }
 
+// --- Import resolution tests (Task 7) ---
+
+func TestResolveStdlibImport(t *testing.T) {
+	env := NewTypeEnv()
+	err := env.LoadImports([]string{"fmt"}, "")
+	if err != nil {
+		t.Fatalf("LoadImports: %v", err)
+	}
+	// fmt.Println should be resolvable
+	typ, err := env.LookupImportedFunc("fmt", "Println")
+	if err != nil {
+		t.Fatalf("LookupImportedFunc: %v", err)
+	}
+	// Println has variadic params and returns (int, error)
+	if len(typ.Results) != 2 {
+		t.Errorf("Println results: got %d, want 2", len(typ.Results))
+	}
+}
+
+func TestResolveOsOpen(t *testing.T) {
+	env := NewTypeEnv()
+	err := env.LoadImports([]string{"os"}, "")
+	if err != nil {
+		t.Fatalf("LoadImports: %v", err)
+	}
+	typ, err := env.LookupImportedFunc("os", "Open")
+	if err != nil {
+		t.Fatalf("LookupImportedFunc: %v", err)
+	}
+	// os.Open returns (*os.File, error)
+	if len(typ.Results) != 2 {
+		t.Errorf("Open results: got %d, want 2", len(typ.Results))
+	}
+	if typ.Results[1].String() != "error" {
+		t.Errorf("Open result[1]: got %s, want error", typ.Results[1])
+	}
+}
+
+func TestResolveImportedType(t *testing.T) {
+	env := NewTypeEnv()
+	err := env.LoadImports([]string{"net/http"}, "")
+	if err != nil {
+		t.Fatalf("LoadImports: %v", err)
+	}
+	typ, err := env.LookupImportedType("http", "Request")
+	if err != nil {
+		t.Fatalf("LookupImportedType: %v", err)
+	}
+	if typ.String() != "http.Request" {
+		t.Errorf("got %s", typ)
+	}
+}
+
+func TestImportResolutionFailsGracefully(t *testing.T) {
+	env := NewTypeEnv()
+	err := env.LoadImports([]string{"nonexistent/package"}, "")
+	// Should return error, not panic
+	if err == nil {
+		t.Error("expected error for nonexistent package")
+	}
+}
+
 func TestCollectImplBlock(t *testing.T) {
 	src := []byte(`package main
 impl Point {
