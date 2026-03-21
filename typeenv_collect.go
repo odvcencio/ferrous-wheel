@@ -191,7 +191,9 @@ func (c *collector) extractParamTypes(paramList *gotreesitter.Node) []Type {
 				nameCount = 1
 			}
 			for k := 0; k < nameCount; k++ {
-				types = append(types, parseTypeString(typeName))
+				if pt := parseTypeString(typeName); pt != nil {
+					types = append(types, pt)
+				}
 			}
 		case "variadic_parameter_declaration":
 			typeNode := c.childByField(child, "type")
@@ -199,7 +201,9 @@ func (c *collector) extractParamTypes(paramList *gotreesitter.Node) []Type {
 				continue
 			}
 			typeName := c.text(typeNode)
-			types = append(types, &SliceType{Elem: parseTypeString(typeName)})
+			if elem := parseTypeString(typeName); elem != nil {
+				types = append(types, &SliceType{Elem: elem})
+			}
 		}
 	}
 	return types
@@ -223,17 +227,24 @@ func (c *collector) extractResultTypes(resultNode *gotreesitter.Node) []Type {
 			if childType == "parameter_declaration" {
 				typeNode := c.childByField(child, "type")
 				if typeNode != nil {
-					types = append(types, parseTypeString(c.text(typeNode)))
+					if pt := parseTypeString(c.text(typeNode)); pt != nil {
+						types = append(types, pt)
+					}
 				}
 			} else {
 				// Bare type in result list
-				types = append(types, parseTypeString(c.text(child)))
+				if pt := parseTypeString(c.text(child)); pt != nil {
+					types = append(types, pt)
+				}
 			}
 		}
 		return types
 	default:
 		// Single return type (e.g., "int", "string", "*Foo")
-		return []Type{parseTypeString(c.text(resultNode))}
+		if pt := parseTypeString(c.text(resultNode)); pt != nil {
+			return []Type{pt}
+		}
+		return nil
 	}
 }
 
@@ -313,7 +324,9 @@ func (c *collector) extractField(fieldNode *gotreesitter.Node, fields map[string
 	}
 
 	for _, name := range names {
-		fields[name] = parseTypeString(typeName)
+		if pt := parseTypeString(typeName); pt != nil {
+			fields[name] = pt
+		}
 	}
 }
 
@@ -359,7 +372,9 @@ func (c *collector) extractVariant(n *gotreesitter.Node) (string, []Type) {
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		child := n.NamedChild(i)
 		if c.nodeType(child) != "identifier" {
-			types = append(types, parseTypeString(c.text(child)))
+			if pt := parseTypeString(c.text(child)); pt != nil {
+				types = append(types, pt)
+			}
 		}
 	}
 	return variantName, types
@@ -508,7 +523,9 @@ func (c *collector) collectFuncLiteralAsMethod(n *gotreesitter.Node, receiverTyp
 		} else if nt == "type_identifier" || nt == "pointer_type" ||
 			nt == "slice_type" || nt == "map_type" || nt == "qualified_type" {
 			// Single return type appears as a type node after the parameter_list
-			results = []Type{parseTypeString(c.text(child))}
+			if pt := parseTypeString(c.text(child)); pt != nil {
+				results = []Type{pt}
+			}
 		}
 	}
 
@@ -523,8 +540,7 @@ func (c *collector) collectFuncLiteralAsMethod(n *gotreesitter.Node, receiverTyp
 func parseTypeString(s string) Type {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		// TODO: return an error instead of defaulting to any
-		return Primitive("any")
+		return nil
 	}
 
 	// Pointer: *T

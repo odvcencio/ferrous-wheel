@@ -92,23 +92,40 @@ func (e *TypeEnv) LookupImportedType(pkg, name string) (Type, error) {
 // CRITICAL: Must check for *types.Named BEFORE calling .Underlying()
 // to preserve named type info (e.g., os.File stays as NamedType).
 func fromGoType(t types.Type) Type {
+	return fromGoTypeWith(t, make(map[types.Type]bool))
+}
+
+func fromGoTypeWith(t types.Type, seen map[types.Type]bool) Type {
+	if seen[t] {
+		// Break infinite recursion for self-referential types
+		if named, ok := t.(*types.Named); ok {
+			pkg := ""
+			if named.Obj().Pkg() != nil {
+				pkg = named.Obj().Pkg().Name()
+			}
+			return &NamedType{Pkg: pkg, Name: named.Obj().Name()}
+		}
+		return Primitive("any")
+	}
+	seen[t] = true
+
 	// Preserve named type information before unwrapping
 	if named, ok := t.(*types.Named); ok {
 		pkg := ""
 		if named.Obj().Pkg() != nil {
 			pkg = named.Obj().Pkg().Name()
 		}
-		return &NamedType{Pkg: pkg, Name: named.Obj().Name(), Underlying: fromGoType(named.Underlying())}
+		return &NamedType{Pkg: pkg, Name: named.Obj().Name(), Underlying: fromGoTypeWith(named.Underlying(), seen)}
 	}
 	switch t := t.(type) {
 	case *types.Basic:
 		return Primitive(t.Name())
 	case *types.Pointer:
-		return &PointerType{Elem: fromGoType(t.Elem())}
+		return &PointerType{Elem: fromGoTypeWith(t.Elem(), seen)}
 	case *types.Slice:
-		return &SliceType{Elem: fromGoType(t.Elem())}
+		return &SliceType{Elem: fromGoTypeWith(t.Elem(), seen)}
 	case *types.Map:
-		return &MapType{Key: fromGoType(t.Key()), Value: fromGoType(t.Elem())}
+		return &MapType{Key: fromGoTypeWith(t.Key(), seen), Value: fromGoTypeWith(t.Elem(), seen)}
 	case *types.Chan:
 		dir := ChanBidi
 		switch t.Dir() {
@@ -117,14 +134,14 @@ func fromGoType(t types.Type) Type {
 		case types.SendOnly:
 			dir = ChanSend
 		}
-		return &ChanType{Elem: fromGoType(t.Elem()), Dir: dir}
+		return &ChanType{Elem: fromGoTypeWith(t.Elem(), seen), Dir: dir}
 	case *types.Signature:
-		return fromGoSignature(t)
+		return fromGoSignatureWith(t, seen)
 	case *types.Struct:
 		fields := make(map[string]Type, t.NumFields())
 		for i := range t.NumFields() {
 			f := t.Field(i)
-			fields[f.Name()] = fromGoType(f.Type())
+			fields[f.Name()] = fromGoTypeWith(f.Type(), seen)
 		}
 		return &StructType{Name: "", Fields: fields, Comparable: types.Comparable(t)}
 	case *types.Interface:
@@ -136,13 +153,17 @@ func fromGoType(t types.Type) Type {
 
 // fromGoSignature converts a go/types.Signature to FuncType.
 func fromGoSignature(sig *types.Signature) *FuncType {
+	return fromGoSignatureWith(sig, make(map[types.Type]bool))
+}
+
+func fromGoSignatureWith(sig *types.Signature, seen map[types.Type]bool) *FuncType {
 	params := make([]Type, 0, sig.Params().Len())
 	for i := range sig.Params().Len() {
-		params = append(params, fromGoType(sig.Params().At(i).Type()))
+		params = append(params, fromGoTypeWith(sig.Params().At(i).Type(), seen))
 	}
 	results := make([]Type, 0, sig.Results().Len())
 	for i := range sig.Results().Len() {
-		results = append(results, fromGoType(sig.Results().At(i).Type()))
+		results = append(results, fromGoTypeWith(sig.Results().At(i).Type(), seen))
 	}
 	return &FuncType{Params: params, Results: results}
 }

@@ -170,6 +170,22 @@ func (s *lspServer) handle(msg *jsonrpcMessage) *jsonrpcMessage {
 		json.Unmarshal(msg.Params, &p)
 		return s.hover(msg.ID, p)
 
+	case "textDocument/completion":
+		var p struct {
+			TextDocument struct{ URI string } `json:"textDocument"`
+			Position     position             `json:"position"`
+		}
+		json.Unmarshal(msg.Params, &p)
+		return s.completion(msg.ID, p.TextDocument.URI, p.Position)
+
+	case "textDocument/definition":
+		var p struct {
+			TextDocument struct{ URI string } `json:"textDocument"`
+			Position     position             `json:"position"`
+		}
+		json.Unmarshal(msg.Params, &p)
+		return s.definition(msg.ID, p.TextDocument.URI, p.Position)
+
 	case "textDocument/documentSymbol":
 		var p struct {
 			TextDocument struct{ URI string } `json:"textDocument"`
@@ -258,6 +274,209 @@ func (s *lspServer) hover(id *json.RawMessage, p hoverParams) *jsonrpcMessage {
 			return s.respond(id, hoverResult{
 				Contents: markupContent{Kind: "markdown", Value: fmt.Sprintf("```go\n%s %s\n```", word, v.String())},
 			})
+		}
+	}
+
+	return s.respond(id, nil)
+}
+
+// completionItem represents a single LSP completion suggestion.
+type completionItem struct {
+	Label  string `json:"label"`
+	Kind   int    `json:"kind"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func (s *lspServer) completion(id *json.RawMessage, uri string, pos position) *jsonrpcMessage {
+	s.mu.Lock()
+	doc, ok := s.docs[uri]
+	s.mu.Unlock()
+	if !ok {
+		return s.respond(id, []completionItem{})
+	}
+
+	lines := strings.Split(doc.text, "\n")
+	if pos.Line >= len(lines) {
+		return s.respond(id, []completionItem{})
+	}
+	line := lines[pos.Line]
+	col := pos.Character
+
+	var items []completionItem
+
+	// Check if the character before cursor is '.' for member completion
+	if col > 0 && col <= len(line) && line[col-1] == '.' {
+		// Find the word before the dot
+		dotPos := col - 1
+		start := dotPos
+		for start > 0 && isIdentChar(line[start-1]) {
+			start--
+		}
+		prefix := line[start:dotPos]
+
+		if doc.env != nil && prefix != "" {
+			// Check if it's a struct - offer fields
+			if st, err := doc.env.LookupStruct(prefix); err == nil {
+				for fname := range st.Fields {
+					items = append(items, completionItem{
+						Label:  fname,
+						Kind:   5, // Field
+						Detail: st.Fields[fname].String(),
+					})
+				}
+			}
+			// Check if it's an imported package - offer exports
+			imports := doc.env.Imports()
+			if imp, ok := imports[prefix]; ok {
+				for name, fn := range imp.Funcs {
+					items = append(items, completionItem{
+						Label:  name,
+						Kind:   3, // Function
+						Detail: fn.String(),
+					})
+				}
+				for name, typ := range imp.Types {
+					items = append(items, completionItem{
+						Label:  name,
+						Kind:   22, // Struct
+						Detail: typ.String(),
+					})
+				}
+			}
+		}
+		return s.respond(id, items)
+	}
+
+	// Default: offer all known functions, structs, and enums
+	if doc.env != nil {
+		for name, fn := range doc.env.Funcs() {
+			items = append(items, completionItem{
+				Label:  name,
+				Kind:   3, // Function
+				Detail: fn.String(),
+			})
+		}
+		for name := range doc.env.Structs() {
+			items = append(items, completionItem{
+				Label: name,
+				Kind:  22, // Struct
+			})
+		}
+		for name := range doc.env.Enums() {
+			items = append(items, completionItem{
+				Label: name,
+				Kind:  13, // Enum
+			})
+		}
+	}
+
+	return s.respond(id, items)
+}
+
+// locationResult represents an LSP Location for go-to-definition.
+type locationResult struct {
+	URI   string   `json:"uri"`
+	Range lspRange `json:"range"`
+}
+
+func (s *lspServer) definition(id *json.RawMessage, uri string, pos position) *jsonrpcMessage {
+	s.mu.Lock()
+	doc, ok := s.docs[uri]
+	s.mu.Unlock()
+	if !ok {
+		return s.respond(id, nil)
+	}
+
+	lines := strings.Split(doc.text, "\n")
+	if pos.Line >= len(lines) {
+		return s.respond(id, nil)
+	}
+	line := lines[pos.Line]
+	word := wordAtPosition(line, pos.Character)
+	if word == "" {
+		return s.respond(id, nil)
+	}
+
+	// Search for the declaration of this word in the document
+	for i, l := range lines {
+		trimmed := strings.TrimSpace(l)
+
+		// func name(
+		if strings.HasPrefix(trimmed, "func ") {
+			fname := extractFuncName(trimmed)
+			if fname == word {
+				col := strings.Index(l, word)
+				return s.respond(id, locationResult{
+					URI: uri,
+					Range: lspRange{
+						Start: position{Line: i, Character: col},
+						End:   position{Line: i, Character: col + len(word)},
+					},
+				})
+			}
+		}
+
+		// let name =
+		if strings.HasPrefix(trimmed, "let ") {
+			rest := strings.TrimPrefix(trimmed, "let ")
+			// Check for exact name followed by = or :
+			if idx := strings.IndexAny(rest, " =:"); idx > 0 {
+				name := rest[:idx]
+				if name == word {
+					col := strings.Index(l, word)
+					return s.respond(id, locationResult{
+						URI: uri,
+						Range: lspRange{
+							Start: position{Line: i, Character: col},
+							End:   position{Line: i, Character: col + len(word)},
+						},
+					})
+				}
+			}
+		}
+
+		// enum Name {
+		if strings.HasPrefix(trimmed, "enum ") {
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 2 && fields[1] == word {
+				col := strings.Index(l, word)
+				return s.respond(id, locationResult{
+					URI: uri,
+					Range: lspRange{
+						Start: position{Line: i, Character: col},
+						End:   position{Line: i, Character: col + len(word)},
+					},
+				})
+			}
+		}
+
+		// type Name struct/interface
+		if strings.HasPrefix(trimmed, "type ") {
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 2 && fields[1] == word {
+				col := strings.Index(l, word)
+				return s.respond(id, locationResult{
+					URI: uri,
+					Range: lspRange{
+						Start: position{Line: i, Character: col},
+						End:   position{Line: i, Character: col + len(word)},
+					},
+				})
+			}
+		}
+
+		// name := or name = (short var declaration)
+		if strings.Contains(l, word+" :=") {
+			col := strings.Index(l, word)
+			if col >= 0 {
+				return s.respond(id, locationResult{
+					URI: uri,
+					Range: lspRange{
+						Start: position{Line: i, Character: col},
+						End:   position{Line: i, Character: col + len(word)},
+					},
+				})
+			}
 		}
 	}
 

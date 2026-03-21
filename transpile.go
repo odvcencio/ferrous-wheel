@@ -785,8 +785,15 @@ func (t *fwTranspiler) emitLetMulti(n *gotreesitter.Node) string {
 	var names []string
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		c := n.NamedChild(i)
-		if t.nodeType(c) == "identifier" {
+		switch t.nodeType(c) {
+		case "identifier":
 			names = append(names, t.text(c))
+		case "let_typed_binding":
+			// Extract name from let_typed_binding node
+			nameNode := t.childByField(c, "name")
+			if nameNode != nil {
+				names = append(names, t.text(nameNode))
+			}
 		}
 	}
 	if len(names) == 0 {

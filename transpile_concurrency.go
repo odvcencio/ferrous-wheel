@@ -109,6 +109,7 @@ func (t *fwTranspiler) emitFanOut(n *gotreesitter.Node) string {
 func (t *fwTranspiler) emitFanIn(n *gotreesitter.Node) string {
 	t.needsSync = true
 	t.needsFanIn = true
+	t.needsReflect = true
 
 	var channels []string
 	for i := 0; i < int(n.NamedChildCount()); i++ {
