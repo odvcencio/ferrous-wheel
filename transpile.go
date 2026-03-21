@@ -210,6 +210,35 @@ func validateTryUsage(root *gotreesitter.Node, lang *gotreesitter.Language, src 
 	return walk(root)
 }
 
+func validateMemoryUsage(root *gotreesitter.Node, lang *gotreesitter.Language, src []byte) error {
+	text := func(n *gotreesitter.Node) string {
+		return string(src[n.StartByte():n.EndByte()])
+	}
+
+	var walk func(n *gotreesitter.Node) error
+	walk = func(n *gotreesitter.Node) error {
+		if n == nil {
+			return nil
+		}
+
+		if n.Type(lang) == "mmap_block" {
+			typeNode := n.ChildByFieldName("type", lang)
+			if typeNode == nil || text(typeNode) != "[]byte" {
+				return fmt.Errorf("mmap_block currently requires []byte target type")
+			}
+		}
+
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			if err := walk(n.NamedChild(i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return walk(root)
+}
+
 func validateNoUnparsedText(root *gotreesitter.Node, src []byte) error {
 	if root == nil {
 		return nil
@@ -265,6 +294,9 @@ func Transpile(source []byte) (string, error) {
 		return "", err
 	}
 	if err := validateTryUsage(root, lang, source); err != nil {
+		return "", err
+	}
+	if err := validateMemoryUsage(root, lang, source); err != nil {
 		return "", err
 	}
 

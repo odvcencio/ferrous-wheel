@@ -8,6 +8,30 @@ import (
 	"testing"
 )
 
+const stressGoMod = "module fwstress\n\ngo 1.24.0\n"
+
+func writeStressProject(t *testing.T, goCode string, extraFiles map[string][]byte) string {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(stressGoMod), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(goCode), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	for relPath, contents := range extraFiles {
+		path := filepath.Join(tmpDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, contents, 0644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	return tmpDir
+}
+
 // compileCheck transpiles .fw source, writes to a temp dir, and runs go build.
 // Returns the generated Go code and any error.
 func compileCheck(t *testing.T, source string) string {
@@ -18,13 +42,7 @@ func compileCheck(t *testing.T, source string) string {
 	}
 	t.Logf("Generated Go:\n%s", goCode)
 
-	tmpDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module fwstress\n\ngo 1.24.0\n"), 0644); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(goCode), 0644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
+	tmpDir := writeStressProject(t, goCode, nil)
 
 	cmd := exec.Command("go", "build", "-o", filepath.Join(tmpDir, "out"), ".")
 	cmd.Dir = tmpDir
@@ -44,19 +62,49 @@ func runCheck(t *testing.T, source string) string {
 	}
 	t.Logf("Generated Go:\n%s", goCode)
 
-	tmpDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module fwstress\n\ngo 1.24.0\n"), 0644); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(goCode), 0644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
+	tmpDir := writeStressProject(t, goCode, nil)
 
 	cmd := exec.Command("go", "run", ".")
 	cmd.Dir = tmpDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go run failed:\n%s\n\nGenerated code:\n%s", out, goCode)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func runCheckWithFiles(t *testing.T, source string, extraFiles map[string][]byte) string {
+	t.Helper()
+	goCode, err := Transpile([]byte(source))
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Generated Go:\n%s", goCode)
+
+	tmpDir := writeStressProject(t, goCode, extraFiles)
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go run failed:\n%s\n\nGenerated code:\n%s", out, goCode)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func runCheckErrorWithFiles(t *testing.T, source string, extraFiles map[string][]byte) string {
+	t.Helper()
+	goCode, err := Transpile([]byte(source))
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Generated Go:\n%s", goCode)
+
+	tmpDir := writeStressProject(t, goCode, extraFiles)
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected go run to fail\nGenerated code:\n%s", goCode)
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -1314,6 +1362,21 @@ func main() {
 	}
 }
 
+func TestStressArenaOverflowPanicsClearly(t *testing.T) {
+	got := runCheckErrorWithFiles(t, `package main
+
+func main() {
+	arena scratch 8 {
+		_ = _arenaAlloc_scratch(8)
+		_ = _arenaAlloc_scratch(1)
+	}
+}
+`, nil)
+	if !strings.Contains(got, "arena scratch out of memory") {
+		t.Errorf("expected arena overflow panic, got:\n%s", got)
+	}
+}
+
 func TestStressPinUnpinBehavioral(t *testing.T) {
 	got := runCheck(t, `package main
 
@@ -1393,6 +1456,56 @@ func main() {
 `)
 	if got != "7 11" {
 		t.Errorf("unsafe cast []byte struct round-trip failed, got:\n%s", got)
+	}
+}
+
+func TestStressMmapReadsFileContents(t *testing.T) {
+	got := runCheckWithFiles(t, `package main
+
+import "fmt"
+
+func main() {
+	mmap file "database.bin" as data []byte {
+		fmt.Println(len(data), string(data))
+	}
+}
+`, map[string][]byte{
+		"database.bin": []byte("hello"),
+	})
+	if got != "5 hello" {
+		t.Errorf("expected mapped file contents, got %q", got)
+	}
+}
+
+func TestStressMmapHandlesEmptyFiles(t *testing.T) {
+	got := runCheckWithFiles(t, `package main
+
+import "fmt"
+
+func main() {
+	mmap file "empty.bin" as data []byte {
+		fmt.Println(len(data))
+	}
+}
+`, map[string][]byte{
+		"empty.bin": {},
+	})
+	if got != "0" {
+		t.Errorf("expected empty mapping to expose zero-length slice, got %q", got)
+	}
+}
+
+func TestStressMmapMissingFilePanicsClearly(t *testing.T) {
+	got := runCheckErrorWithFiles(t, `package main
+
+func main() {
+	mmap file "missing.bin" as data []byte {
+		_ = data
+	}
+}
+`, nil)
+	if !strings.Contains(got, "missing.bin") {
+		t.Errorf("expected missing file error, got:\n%s", got)
 	}
 }
 

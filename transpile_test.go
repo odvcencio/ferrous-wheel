@@ -860,6 +860,9 @@ func f() {
 	if !strings.Contains(goCode, "_arenaAlloc_scratch") {
 		t.Error("expected _arenaAlloc_scratch function")
 	}
+	if !strings.Contains(goCode, `panic("arena scratch out of memory")`) {
+		t.Error("expected arena overflow guard")
+	}
 	if !strings.Contains(goCode, "unsafe.Pointer") {
 		t.Error("expected unsafe.Pointer in arena allocator")
 	}
@@ -958,7 +961,7 @@ func f() {
 func TestTranspileMmap(t *testing.T) {
 	source := []byte(`package main
 func f() {
-	mmap file "data.bin" as data int {
+	mmap file "data.bin" as data []byte {
 		_ = data
 	}
 }
@@ -971,6 +974,9 @@ func f() {
 
 	if !strings.Contains(goCode, `os.Open("data.bin")`) {
 		t.Error("expected os.Open call")
+	}
+	if !strings.Contains(goCode, "if _fwMmapErr != nil") {
+		t.Error("expected mmap error handling")
 	}
 	if !strings.Contains(goCode, "syscall.Mmap") {
 		t.Error("expected syscall.Mmap call")

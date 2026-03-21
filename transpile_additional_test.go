@@ -236,6 +236,24 @@ func main() {
 	}
 }
 
+func TestTranspileRejectsMmapNonByteSliceTargets(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	mmap file "data.bin" as data int {
+		_ = data
+	}
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "mmap_block currently requires []byte target type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestTranspileRejectsUnsupportedTrySites(t *testing.T) {
 	tests := []struct {
 		name   string

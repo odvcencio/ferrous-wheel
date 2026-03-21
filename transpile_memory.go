@@ -26,9 +26,14 @@ func (t *fwTranspiler) emitArena(n *gotreesitter.Node) string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "_arenaSize := %s\n", sizeExpr)
+	b.WriteString("if _arenaSize < 0 {\n\tpanic(\"arena size must be >= 0\")\n}\n")
 	fmt.Fprintf(&b, "_arena_%s := make([]byte, 0, _arenaSize)\n", name)
 	fmt.Fprintf(&b, "_arenaAlloc_%s := func(size int) unsafe.Pointer {\n", name)
+	b.WriteString("\tif size < 0 {\n\t\tpanic(\"arena allocation size must be >= 0\")\n\t}\n")
+	b.WriteString("\tif size == 0 {\n\t\treturn nil\n\t}\n")
 	fmt.Fprintf(&b, "\toff := len(_arena_%s)\n", name)
+	fmt.Fprintf(&b, "\tremaining := cap(_arena_%s) - off\n", name)
+	fmt.Fprintf(&b, "\tif size > remaining {\n\t\tpanic(%q)\n\t}\n", "arena "+name+" out of memory")
 	fmt.Fprintf(&b, "\t_arena_%s = _arena_%s[:off+size]\n", name, name)
 	fmt.Fprintf(&b, "\treturn unsafe.Pointer(&_arena_%s[off])\n", name)
 	fmt.Fprintf(&b, "}\n")
@@ -83,7 +88,8 @@ func (t *fwTranspiler) emitUnsafeCast(n *gotreesitter.Node) string {
 func (t *fwTranspiler) emitMmap(n *gotreesitter.Node) string {
 	pathNode := t.childByField(n, "path")
 	nameNode := t.childByField(n, "name")
-	if pathNode == nil || nameNode == nil {
+	typeNode := t.childByField(n, "type")
+	if pathNode == nil || nameNode == nil || typeNode == nil {
 		return t.text(n)
 	}
 	t.needsOS = true
@@ -94,11 +100,20 @@ func (t *fwTranspiler) emitMmap(n *gotreesitter.Node) string {
 	block := t.findBlock(n)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "_f, _ := os.Open(%s)\n", pathStr)
+	fmt.Fprintf(&b, "_f, _fwMmapErr := os.Open(%s)\n", pathStr)
+	b.WriteString("if _fwMmapErr != nil {\n\tpanic(_fwMmapErr)\n}\n")
 	b.WriteString("defer _f.Close()\n")
-	b.WriteString("_fi, _ := _f.Stat()\n")
-	fmt.Fprintf(&b, "%s, _ := syscall.Mmap(int(_f.Fd()), 0, int(_fi.Size()), syscall.PROT_READ, syscall.MAP_SHARED)\n", name)
-	fmt.Fprintf(&b, "defer syscall.Munmap(%s)\n", name)
+	b.WriteString("_fi, _fwMmapErr := _f.Stat()\n")
+	b.WriteString("if _fwMmapErr != nil {\n\tpanic(_fwMmapErr)\n}\n")
+	b.WriteString("_fwMmapSize := _fi.Size()\n")
+	b.WriteString("if _fwMmapSize < 0 {\n\tpanic(\"mmap file size must be non-negative\")\n}\n")
+	b.WriteString("if _fwMmapSize > int64(int(^uint(0)>>1)) {\n\tpanic(\"mmap file too large\")\n}\n")
+	fmt.Fprintf(&b, "var %s []byte\n", name)
+	b.WriteString("if _fwMmapSize > 0 {\n")
+	fmt.Fprintf(&b, "\t%s, _fwMmapErr = syscall.Mmap(int(_f.Fd()), 0, int(_fwMmapSize), syscall.PROT_READ, syscall.MAP_SHARED)\n", name)
+	b.WriteString("\tif _fwMmapErr != nil {\n\t\tpanic(_fwMmapErr)\n\t}\n")
+	fmt.Fprintf(&b, "\tdefer func() {\n\t\tif _fwMmapErr := syscall.Munmap(%s); _fwMmapErr != nil {\n\t\t\tpanic(_fwMmapErr)\n\t\t}\n\t}()\n", name)
+	b.WriteString("}\n")
 	b.WriteString(block)
 	return b.String()
 }
