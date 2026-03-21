@@ -31,18 +31,6 @@ package ferrouswheel
 func Grammar() *GrammarType {
 	return ExtendGrammar("ferrous_wheel", GoGrammar(), func(g *GrammarType) {
 
-		// Mark ferrous-wheel keywords as non-keyword strings so the keyword DFA
-		// doesn't promote them unconditionally (they coexist as identifiers
-		// in Go code).
-		if g.NonKeywordStrings == nil {
-			g.NonKeywordStrings = make(map[string]bool)
-		}
-		g.NonKeywordStrings["enum"] = true
-		g.NonKeywordStrings["match"] = true
-		g.NonKeywordStrings["let"] = true
-		g.NonKeywordStrings["fn"] = true
-		g.NonKeywordStrings["try"] = true
-
 		// --- enum declaration ---
 		// enum Color { Red, Green, Blue(int) }
 		g.Define("enum_variant", Choice(
@@ -133,31 +121,45 @@ func Grammar() *GrammarType {
 			),
 		))
 
-		// --- let binding: let x = expr ---
+		// --- let binding: let x = expr  or  let x: int = expr ---
 		g.Define("let_declaration", Seq(
 			Str("let"),
 			Field("name", Sym("identifier")),
+			Optional(Seq(Str(":"), Field("type_annotation", Sym("_type")))),
 			Str("="),
 			Field("value", Sym("_expression")),
 		))
 
-		// --- let multi-assignment: let (a, b) = f() ---
+		// --- let typed binding: name or name: Type (for multi-declarations) ---
+		g.Define("let_typed_binding", Seq(
+			Field("name", Sym("identifier")),
+			Optional(Seq(Str(":"), Field("type", Sym("_type")))),
+		))
+
+		// --- let multi-assignment: let (a, b) = f()  or  let (a: int, b: string) = f() ---
 		// Transpiles to: a, b := f()
 		g.Define("let_multi_declaration", Seq(
 			Str("let"),
 			Str("("),
-			CommaSep1(Sym("identifier")),
+			CommaSep1(Choice(Sym("let_typed_binding"), Sym("identifier"))),
 			Str(")"),
 			Str("="),
 			Field("value", Sym("_expression")),
 		))
 
+		// --- lambda typed param: name: Type ---
+		g.Define("lambda_typed_param", Seq(
+			Field("name", Sym("identifier")),
+			Str(":"),
+			Field("type", Sym("_type")),
+		))
+
 		// --- lambda: fn(params) body ---
 		// Uses fn keyword to avoid conflict with bitwise OR operator |.
-		// fn(x, y) x + y  or  fn(x) { return x * 2 }
+		// fn(x, y) x + y  or  fn(x: int, y: int) x + y  or  fn(x) { return x * 2 }
 		g.Define("lambda_params", Seq(
 			Str("("),
-			CommaSep1(Sym("identifier")),
+			CommaSep1(Choice(Sym("lambda_typed_param"), Sym("identifier"))),
 			Str(")"),
 		))
 
@@ -166,9 +168,13 @@ func Grammar() *GrammarType {
 		// than wrapping the lambda.
 		g.Define("_lambda_body", PrecRight(-100, Sym("_expression")))
 
+		// Token for -> to prevent splitting into - and >
+		g.Define("_fw_arrow_op", Token(Seq(Str("-"), Str(">"))))
+
 		g.Define("lambda_expression", PrecRight(-1, Seq(
 			Str("fn"),
 			Field("params", Sym("lambda_params")),
+			Optional(Seq(Sym("_fw_arrow_op"), Field("return_type", Sym("_type")))),
 			Field("body", Choice(Sym("block"), Sym("_lambda_body"))),
 		)))
 
@@ -461,13 +467,15 @@ func Grammar() *GrammarType {
 		))
 
 		// Wire into grammar
-		AppendChoice(g, "_top_level_declaration",
+		for _, r := range []*Rule{
 			Sym("enum_declaration"),
 			Sym("derive_declaration"),
 			Sym("impl_block"),
-		)
+		} {
+			AppendChoice(g, "_top_level_declaration", r)
+		}
 
-		AppendChoice(g, "_expression",
+		for _, r := range []*Rule{
 			Sym("match_expression"),
 			Sym("null_coalesce"),
 			Sym("safe_navigation"),
@@ -482,9 +490,11 @@ func Grammar() *GrammarType {
 			// Concurrency
 			Sym("fan_in_expression"),
 			Sym("pipeline_expression"),
-		)
+		} {
+			AppendChoice(g, "_expression", r)
+		}
 
-		AppendChoice(g, "_statement",
+		for _, r := range []*Rule{
 			Sym("let_declaration"),
 			Sym("let_multi_declaration"),
 			Sym("enum_declaration"),
@@ -514,39 +524,9 @@ func Grammar() *GrammarType {
 			Sym("throttle_block"),
 			Sym("retry_block"),
 			Sym("breaker_block"),
-		)
-
-		// Mark new keywords as non-keyword strings
-		g.NonKeywordStrings["if"] = true // used in match guards, also Go keyword
-		// New feature keywords that coexist as identifiers in Go code
-		g.NonKeywordStrings["derive"] = true
-		g.NonKeywordStrings["in"] = true
-		g.NonKeywordStrings["guard"] = true
-		g.NonKeywordStrings["impl"] = true
-		g.NonKeywordStrings["unless"] = true
-		g.NonKeywordStrings["until"] = true
-		g.NonKeywordStrings["repeat"] = true
-		g.NonKeywordStrings["swap"] = true
-		// Low-level keywords
-		g.NonKeywordStrings["arena"] = true
-		g.NonKeywordStrings["pin"] = true
-		g.NonKeywordStrings["unpin"] = true
-		// Note: "unsafe" is already a Go keyword
-		g.NonKeywordStrings["mmap"] = true
-		g.NonKeywordStrings["packed"] = true
-		g.NonKeywordStrings["vectorize"] = true
-		// Concurrency keywords
-		// Note: "select" is already a Go keyword; "select!" is a new token
-		g.NonKeywordStrings["fan"] = true
-		g.NonKeywordStrings["out"] = true
-		g.NonKeywordStrings["from"] = true
-		g.NonKeywordStrings["timeout"] = true
-		g.NonKeywordStrings["concurrent"] = true
-		g.NonKeywordStrings["throttle"] = true
-		g.NonKeywordStrings["retry"] = true
-		g.NonKeywordStrings["breaker"] = true
-		// Note: "for" is NOT added — it's already a Go keyword and should be promoted
-		// Note: "f" is NOT added — fstring uses a Token(Pat(...)) so no keyword conflict
+		} {
+			AppendChoice(g, "_statement", r)
+		}
 
 		// GLR conflicts for keyword ambiguities
 		AddConflict(g, "_statement", "let_declaration")
@@ -579,6 +559,10 @@ func Grammar() *GrammarType {
 
 		// let_multi conflicts with let_declaration on the "let" keyword
 		AddConflict(g, "let_declaration", "let_multi_declaration")
+
+		// typed annotations: identifier can start both typed and untyped alternatives
+		AddConflict(g, "lambda_typed_param", "identifier")
+		AddConflict(g, "let_typed_binding", "identifier")
 
 		// New feature conflicts
 		AddConflict(g, "_statement", "if_let_statement")

@@ -644,6 +644,32 @@ func f() {
 }
 
 // =============================================
+// TYPE ANNOTATION PARSE TESTS
+// =============================================
+
+func TestAnnotatedLetParsesCorrectly(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"let with type", "package main\nfunc f() {\n\tlet x: int = 42\n}\n", "(let_declaration (identifier) (type_identifier)"},
+		{"let without type", "package main\nfunc f() {\n\tlet x = 42\n}\n", "let_declaration"},
+		{"lambda typed params", "package main\nfunc f() {\n\tf := fn(x: int, y: int) x + y\n\t_ = f\n}\n", "lambda_typed_param"},
+		{"lambda return type", "package main\nfunc f() {\n\tf := fn(x: int) -> int { return x }\n\t_ = f\n}\n", "(lambda_expression (lambda_params (lambda_typed_param"},
+		{"lambda untyped", "package main\nfunc f() {\n\tf := fn(x) x * 2\n\t_ = f\n}\n", "lambda_expression"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sexpr := parseFW(t, tt.input)
+			if !strings.Contains(sexpr, tt.want) {
+				t.Errorf("parse of %q missing %q in:\n%s", tt.input, tt.want, sexpr)
+			}
+		})
+	}
+}
+
+// =============================================
 // LOW-LEVEL MEMORY MANAGEMENT PARSE TESTS
 // =============================================
 
