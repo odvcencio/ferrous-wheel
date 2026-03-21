@@ -317,6 +317,16 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, error) 
 	}
 
 	t := &fwTranspiler{src: source, lang: lang, sourceFile: opts.SourceFile}
+
+	// Build type environment (best-effort — failures are non-fatal)
+	if env, collectErr := collectTypes(source); collectErr == nil {
+		importPaths := env.importPaths()
+		if len(importPaths) > 0 {
+			_ = env.LoadImports(importPaths, "")
+		}
+		t.typeEnv = env
+	}
+
 	result := t.emit(root)
 
 	// Detect Result[T] and Option[T] usage in the transpiled output
@@ -332,6 +342,7 @@ type fwTranspiler struct {
 	src             []byte
 	lang            *gotreesitter.Language
 	sourceFile      string // original .fw filename for //line directives
+	typeEnv         *TypeEnv
 	needsReflect    bool
 	needsFmt        bool
 	needsJSON       bool
@@ -796,6 +807,24 @@ func (t *fwTranspiler) emitTernary(n *gotreesitter.Node) string {
 	if cond == nil || cons == nil || alt == nil {
 		return t.text(n)
 	}
+
+	// Typed path: resolve both arms and unify to avoid interface{}
+	if t.typeEnv != nil {
+		consType, err1 := t.typeEnv.Resolve(cons, t.lang, t.src)
+		altType, err2 := t.typeEnv.Resolve(alt, t.lang, t.src)
+		if err1 == nil && err2 == nil {
+			unified, uerr := Unify(consType, altType)
+			if uerr == nil {
+				if u, ok := unified.(*UntypedConstType); ok {
+					unified = u.Default()
+				}
+				return fmt.Sprintf("func() %s { if %s { return %s }; return %s }()",
+					unified.String(), t.emit(cond), t.emit(cons), t.emit(alt))
+			}
+		}
+	}
+
+	// fallback: type resolution failed
 	return fmt.Sprintf("func() interface{} { if %s { return %s }; return %s }()",
 		t.emit(cond), t.emit(cons), t.emit(alt))
 }
@@ -808,8 +837,46 @@ func (t *fwTranspiler) emitMatch(n *gotreesitter.Node) string {
 		return t.text(n)
 	}
 
+	// Typed path: resolve and unify all arm body types
+	returnType := "interface{}"
+	if t.typeEnv != nil {
+		var armTypes []Type
+		allResolved := true
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			c := n.NamedChild(i)
+			if t.nodeType(c) == "match_arm" {
+				body := t.childByField(c, "body")
+				if body != nil {
+					bt, err := t.typeEnv.Resolve(body, t.lang, t.src)
+					if err != nil {
+						allResolved = false
+						break
+					}
+					armTypes = append(armTypes, bt)
+				}
+			}
+		}
+		if allResolved && len(armTypes) > 0 {
+			unified := armTypes[0]
+			for _, at := range armTypes[1:] {
+				u, uerr := Unify(unified, at)
+				if uerr != nil {
+					unified = nil
+					break
+				}
+				unified = u
+			}
+			if unified != nil {
+				if u, ok := unified.(*UntypedConstType); ok {
+					unified = u.Default()
+				}
+				returnType = unified.String()
+			}
+		}
+	}
+
 	var b strings.Builder
-	fmt.Fprintf(&b, "func() interface{} { switch %s {\n", t.emit(subject))
+	fmt.Fprintf(&b, "func() %s { switch %s {\n", returnType, t.emit(subject))
 
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		c := n.NamedChild(i)
@@ -844,6 +911,24 @@ func (t *fwTranspiler) emitNullCoalesce(n *gotreesitter.Node) string {
 	if left == nil || right == nil {
 		return t.text(n)
 	}
+
+	// Typed path: resolve left type, use type-specific zero check
+	if t.typeEnv != nil {
+		leftType, err := t.typeEnv.Resolve(left, t.lang, t.src)
+		if err == nil {
+			if u, ok := leftType.(*UntypedConstType); ok {
+				leftType = u.Default()
+			}
+			zeroExpr, zerr := ZeroExpr(leftType)
+			if zerr == nil && leftType != nil {
+				l := t.emit(left)
+				return fmt.Sprintf("func() %s { if %s != %s { return %s }; return %s }()",
+					leftType.String(), l, zeroExpr, l, t.emit(right))
+			}
+		}
+	}
+
+	// fallback: type resolution failed
 	t.needsReflect = true
 	l := t.emit(left)
 	return fmt.Sprintf("func() interface{} { _v := reflect.ValueOf(%s); if _v.IsValid() && !_v.IsZero() { return %s }; return %s }()", l, l, t.emit(right))
@@ -865,6 +950,34 @@ func (t *fwTranspiler) emitSafeNav(n *gotreesitter.Node) string {
 	if obj == nil || field == nil {
 		return t.text(n)
 	}
+
+	// Typed path: resolve object type and field type for direct access
+	if t.typeEnv != nil {
+		objType, err := t.typeEnv.Resolve(obj, t.lang, t.src)
+		if err == nil {
+			fieldName := t.text(field)
+			fieldType, ferr := t.typeEnv.ResolveFieldAccess(objType, fieldName)
+			if ferr == nil {
+				if u, ok := fieldType.(*UntypedConstType); ok {
+					fieldType = u.Default()
+				}
+				o := t.emit(obj)
+				// Check if object is a pointer type — needs nil check
+				if _, isPtr := objType.(*PointerType); isPtr {
+					zeroExpr, zerr := ZeroExpr(fieldType)
+					if zerr != nil {
+						zeroExpr = fmt.Sprintf("*new(%s)", fieldType.String())
+					}
+					return fmt.Sprintf("func() %s { if %s == nil { return %s }; return %s.%s }()",
+						fieldType.String(), o, zeroExpr, o, fieldName)
+				}
+				// Non-pointer struct: direct access, no nil check needed
+				return fmt.Sprintf("%s.%s", o, fieldName)
+			}
+		}
+	}
+
+	// fallback: type resolution failed
 	t.needsReflect = true
 	o := t.emit(obj)
 	f := t.text(field)
@@ -891,7 +1004,79 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 		return t.text(n)
 	}
 
-	// Collect param names
+	// Typed path: check for lambda_typed_param nodes and return_type field
+	if t.typeEnv != nil {
+		hasTypedParams := false
+		for i := 0; i < int(params.NamedChildCount()); i++ {
+			if t.nodeType(params.NamedChild(i)) == "lambda_typed_param" {
+				hasTypedParams = true
+				break
+			}
+		}
+
+		if hasTypedParams {
+			var b strings.Builder
+			b.WriteString("func(")
+			first := true
+			for i := 0; i < int(params.NamedChildCount()); i++ {
+				c := params.NamedChild(i)
+				if t.nodeType(c) == "lambda_typed_param" {
+					nameNode := t.childByField(c, "name")
+					typeNode := t.childByField(c, "type")
+					if nameNode != nil && typeNode != nil {
+						if !first {
+							b.WriteString(", ")
+						}
+						first = false
+						fmt.Fprintf(&b, "%s %s", t.text(nameNode), t.text(typeNode))
+					}
+				} else if t.nodeType(c) == "identifier" {
+					if !first {
+						b.WriteString(", ")
+					}
+					first = false
+					fmt.Fprintf(&b, "%s interface{}", t.text(c))
+				}
+			}
+			b.WriteString(")")
+
+			// Check for return type annotation
+			retType := t.childByField(n, "return_type")
+			if retType != nil {
+				fmt.Fprintf(&b, " %s ", t.text(retType))
+			} else {
+				// Try to resolve return type from body
+				lambdaType, err := t.typeEnv.Resolve(n, t.lang, t.src)
+				if err == nil {
+					if ft, ok := lambdaType.(*FuncType); ok && len(ft.Results) > 0 {
+						rt := ft.Results[0]
+						if u, ok := rt.(*UntypedConstType); ok {
+							rt = u.Default()
+						}
+						if rt != nil {
+							fmt.Fprintf(&b, " %s ", rt.String())
+						} else {
+							b.WriteString(" interface{} ")
+						}
+					} else {
+						b.WriteString(" interface{} ")
+					}
+				} else {
+					b.WriteString(" interface{} ")
+				}
+			}
+
+			bodyText := t.emit(body)
+			if t.nodeType(body) == "block" {
+				b.WriteString(bodyText)
+			} else {
+				fmt.Fprintf(&b, "{ return %s }", bodyText)
+			}
+			return b.String()
+		}
+	}
+
+	// fallback: type resolution failed — untyped params
 	var paramNames []string
 	for i := 0; i < int(params.NamedChildCount()); i++ {
 		c := params.NamedChild(i)
@@ -1264,10 +1449,33 @@ func (t *fwTranspiler) emitListComprehension(n *gotreesitter.Node) string {
 		return t.text(n)
 	}
 
+	// Typed path: resolve iterable element type and expression type
+	elemTypeStr := "interface{}"
+	if t.typeEnv != nil {
+		iterType, err := t.typeEnv.Resolve(iterable, t.lang, t.src)
+		if err == nil {
+			if sliceType, ok := iterType.(*SliceType); ok {
+				// Register the loop variable's type in a temporary scope
+				t.typeEnv.PushScope()
+				t.typeEnv.RegisterVar(t.text(varNode), sliceType.Elem)
+				exprType, exprErr := t.typeEnv.Resolve(expr, t.lang, t.src)
+				t.typeEnv.PopScope()
+				if exprErr == nil {
+					if u, ok := exprType.(*UntypedConstType); ok {
+						exprType = u.Default()
+					}
+					if exprType != nil {
+						elemTypeStr = exprType.String()
+					}
+				}
+			}
+		}
+	}
+
 	varName := t.text(varNode)
 	var b strings.Builder
-	fmt.Fprintf(&b, "func() []interface{} {\n")
-	fmt.Fprintf(&b, "\tvar _result []interface{}\n")
+	fmt.Fprintf(&b, "func() []%s {\n", elemTypeStr)
+	fmt.Fprintf(&b, "\tvar _result []%s\n", elemTypeStr)
 	fmt.Fprintf(&b, "\tfor _, %s := range %s {\n", varName, t.emit(iterable))
 	if filter != nil {
 		fmt.Fprintf(&b, "\t\tif %s {\n", t.emit(filter))
