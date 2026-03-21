@@ -295,15 +295,18 @@ func _fwThrottleWait(name string, rate int, burst int) {
 `
 
 const fanInHelperDef = `
-func _fwFanIn[T any](chans ...<-chan T) <-chan T {
-	out := make(chan T)
+func _fwFanIn(chans ...interface{}) <-chan interface{} {
+	out := make(chan interface{})
 	var wg sync.WaitGroup
 	for _, ch := range chans {
 		wg.Add(1)
-		go func(c <-chan T) {
+		go func(c interface{}) {
 			defer wg.Done()
-			for v := range c {
-				out <- v
+			v := reflect.ValueOf(c)
+			for {
+				val, ok := v.Recv()
+				if !ok { return }
+				out <- val.Interface()
 			}
 		}(ch)
 	}

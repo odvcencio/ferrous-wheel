@@ -168,7 +168,8 @@ func TestTranspileTernary(t *testing.T) {
 			require.NoError(t, err, "danmuji:165: given a ternary expression > then transpiles without error | expect (expect err == nil)")
 		})
 		t.Run("wraps in IIFE", func(t *testing.T) {
-			assert.True(t, strings.Contains(goCode, "func() interface{}"), "danmuji:168: given a ternary expression > then wraps in IIFE | expect (expect strings.Contains(goCode, \"func() interface{}\"))")
+			assert.False(t, strings.Contains(goCode, "interface{}"), "output should not contain interface{}")
+			assert.True(t, strings.Contains(goCode, "func()"), "danmuji:168: given a ternary expression > then wraps in IIFE | expect func() wrapper")
 		})
 		t.Run("includes condition", func(t *testing.T) {
 			assert.True(t, strings.Contains(goCode, "if true"), "danmuji:171: given a ternary expression > then includes condition | expect (expect strings.Contains(goCode, \"if true\"))")

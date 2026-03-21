@@ -212,7 +212,10 @@ func f() {
 	}
 	t.Logf("Go:\n%s", goCode)
 
-	if !strings.Contains(goCode, "func() interface{}") {
+	if strings.Contains(goCode, "interface{}") {
+		t.Error("output should not contain interface{}")
+	}
+	if !strings.Contains(goCode, "func()") {
 		t.Error("expected IIFE wrapper for ternary")
 	}
 	if !strings.Contains(goCode, "if true") {
@@ -475,8 +478,8 @@ func f() {
 	if !strings.Contains(goCode, "x := 42") {
 		t.Error("expected let transpilation")
 	}
-	// ternary -> IIFE
-	if !strings.Contains(goCode, "func() interface{}") {
+	// ternary -> IIFE (typed: func() string, not interface{})
+	if !strings.Contains(goCode, "func()") {
 		t.Error("expected ternary IIFE")
 	}
 	// let multi -> multi :=
@@ -1255,7 +1258,7 @@ func f() {
 		t.Error("expected sync.WaitGroup in fan-in")
 	}
 	if !strings.Contains(goCode, "reflect.ValueOf") {
-		t.Error("expected reflective channel receive support")
+		t.Error("expected reflect.ValueOf for heterogeneous channel fan-in")
 	}
 }
 
