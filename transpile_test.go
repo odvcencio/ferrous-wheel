@@ -456,8 +456,14 @@ derive JSON for Config
 	if !strings.Contains(goCode, "func (x Config) MarshalJSON() ([]byte, error)") {
 		t.Error("expected MarshalJSON method")
 	}
+	if !strings.Contains(goCode, "func (x *Config) UnmarshalJSON(data []byte) error") {
+		t.Error("expected UnmarshalJSON method")
+	}
 	if !strings.Contains(goCode, "json.Marshal") {
 		t.Error("expected json.Marshal call")
+	}
+	if !strings.Contains(goCode, "json.Unmarshal") {
+		t.Error("expected json.Unmarshal call")
 	}
 }
 
@@ -938,11 +944,14 @@ func f() {
 	}
 	t.Logf("Go:\n%s", goCode)
 
-	if !strings.Contains(goCode, "unsafe.Pointer") {
-		t.Error("expected unsafe.Pointer cast")
+	if !strings.Contains(goCode, "_fwUnsafeCast[int](s)") {
+		t.Error("expected helper-backed unsafe cast")
 	}
 	if !strings.Contains(goCode, `"unsafe"`) {
 		t.Error("expected unsafe import")
+	}
+	if !strings.Contains(goCode, "func _fwUnsafeCast[To any, From any]") {
+		t.Error("expected unsafe cast helper to be injected")
 	}
 }
 
@@ -1100,14 +1109,14 @@ func f() {
 	}
 	t.Logf("Go:\n%s", goCode)
 
-	if !strings.Contains(goCode, "func() <-chan interface{}") {
-		t.Error("expected channel merge IIFE")
+	if !strings.Contains(goCode, "_fwFanIn(ch1, ch2, ch3)") {
+		t.Error("expected fan-in helper call")
 	}
 	if !strings.Contains(goCode, "sync.WaitGroup") {
 		t.Error("expected sync.WaitGroup in fan-in")
 	}
-	if !strings.Contains(goCode, "close(out)") {
-		t.Error("expected channel close")
+	if !strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected reflective channel receive support")
 	}
 }
 
@@ -1169,14 +1178,39 @@ func f() {
 	}
 	t.Logf("Go:\n%s", goCode)
 
-	if !strings.Contains(goCode, "time.NewTicker") {
-		t.Error("expected time.NewTicker")
+	if !strings.Contains(goCode, `_fwThrottleWait("throttle_`) {
+		t.Error("expected site-scoped throttle helper call")
 	}
-	if !strings.Contains(goCode, "_ticker.Stop()") {
-		t.Error("expected ticker cleanup")
+	if !strings.Contains(goCode, "func _fwThrottleWait(name string, rate int, burst int)") {
+		t.Error("expected throttle helper to be injected")
 	}
 	if !strings.Contains(goCode, `"time"`) {
 		t.Error("expected time import")
+	}
+	if !strings.Contains(goCode, `"sync"`) {
+		t.Error("expected sync import")
+	}
+}
+
+func TestTranspileThrottleBurst(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	throttle 100 burst 3 {
+		doWork()
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "// throttle: 100/s, burst: 3") {
+		t.Error("expected throttle comment to preserve burst")
+	}
+	if !strings.Contains(goCode, `int(3)`) {
+		t.Error("expected burst to be passed to throttle helper")
 	}
 }
 
@@ -1222,8 +1256,8 @@ func f() {
 	if !strings.Contains(goCode, "Circuit breaker") {
 		t.Error("expected circuit breaker comment")
 	}
-	if !strings.Contains(goCode, "_breaker_myservice_failures") {
-		t.Error("expected breaker failure counter")
+	if !strings.Contains(goCode, `_fwBreakerDo("myservice"`) {
+		t.Error("expected breaker helper call")
 	}
 	if !strings.Contains(goCode, "time.Since") {
 		t.Error("expected time.Since check")

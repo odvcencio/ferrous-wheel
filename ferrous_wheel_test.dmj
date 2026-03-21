@@ -1,0 +1,813 @@
+package ferrouswheel_test
+
+import (
+	"strings"
+	"testing"
+
+	ferrouswheel "github.com/odvcencio/ferrous-wheel"
+)
+
+// =============================================================================
+// TYPE SYSTEM
+// =============================================================================
+
+unit "Transpile.Enum" {
+	given "a simple enum declaration" {
+		source := []byte("package main\nenum Color {\n\tRed,\n\tGreen,\n\tBlue(int),\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates struct with tag field" {
+			expect strings.Contains(goCode, "type Color struct")
+			expect strings.Contains(goCode, "tag int")
+		}
+		then "generates variant constants" {
+			expect strings.Contains(goCode, "ColorRed = 0")
+			expect strings.Contains(goCode, "ColorGreen = 1")
+			expect strings.Contains(goCode, "ColorBlue = 2")
+		}
+		then "generates constructor functions" {
+			expect strings.Contains(goCode, "func Red() Color")
+			expect strings.Contains(goCode, "func Green() Color")
+			expect strings.Contains(goCode, "func Blue(v0 int) Color")
+		}
+		then "eliminates enum keyword" {
+			reject strings.Contains(goCode, "enum ")
+		}
+	}
+}
+
+unit "Transpile.Derive" {
+	given "derive Stringer for a type" {
+		source := []byte("package main\nderive Stringer for Color\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates String method" {
+			expect strings.Contains(goCode, "func (x Color) String() string")
+		}
+		then "eliminates derive keyword" {
+			reject strings.Contains(goCode, "derive")
+		}
+	}
+
+	given "derive Equal for a type" {
+		source := []byte("package main\nderive Equal for Point\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates Equal method with correct signature" {
+			expect strings.Contains(goCode, "func (x Point) Equal(other Point) bool")
+			expect strings.Contains(goCode, "return x == other")
+		}
+	}
+
+	given "derive JSON for a type" {
+		source := []byte("package main\nderive JSON for Config\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates MarshalJSON method" {
+			expect strings.Contains(goCode, "func (x Config) MarshalJSON() ([]byte, error)")
+			expect strings.Contains(goCode, "json.Marshal")
+		}
+		then "injects encoding/json import" {
+			expect strings.Contains(goCode, "\"encoding/json\"")
+		}
+	}
+}
+
+unit "Transpile.Impl" {
+	given "an impl block with methods" {
+		source := []byte("package main\nimpl Point {\n\tfunc Area() int {\n\t\treturn 0\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "adds receiver to methods" {
+			expect strings.Contains(goCode, "func (self Point)")
+		}
+		then "eliminates impl keyword" {
+			reject strings.Contains(goCode, "impl ")
+		}
+	}
+}
+
+// =============================================================================
+// BINDINGS
+// =============================================================================
+
+unit "Transpile.Let" {
+	given "a let declaration" {
+		source := []byte("package main\nfunc main() {\n\tlet x = 42\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "converts to short variable declaration" {
+			expect strings.Contains(goCode, "x := 42")
+		}
+		then "eliminates let keyword" {
+			reject strings.Contains(goCode, "let ")
+		}
+	}
+
+	given "a let multi declaration" {
+		source := []byte("package main\nfunc f() {\n\tlet (a, b) = getPair()\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "converts to multi-assignment" {
+			expect strings.Contains(goCode, "a, b := getPair()")
+		}
+	}
+}
+
+unit "Transpile.Lambda" {
+	given "a lambda expression" {
+		source := []byte("package main\nfunc f() {\n\tdouble := fn(x) x * 2\n\t_ = double\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates func literal with interface params" {
+			expect strings.Contains(goCode, "func(x interface{}) interface{}")
+		}
+		then "captures full body expression" {
+			expect strings.Contains(goCode, "return x * 2")
+		}
+	}
+}
+
+// =============================================================================
+// EXPRESSIONS
+// =============================================================================
+
+unit "Transpile.Ternary" {
+	given "a ternary expression" {
+		source := []byte("package main\nfunc f() {\n\tx := true ? 1 : 0\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "wraps in IIFE" {
+			expect strings.Contains(goCode, "func() interface{}")
+		}
+		then "includes condition" {
+			expect strings.Contains(goCode, "if true")
+		}
+		then "includes both branches" {
+			expect strings.Contains(goCode, "return 1")
+			expect strings.Contains(goCode, "return 0")
+		}
+	}
+}
+
+unit "Transpile.NullCoalesce" {
+	given "a null coalesce expression" {
+		source := []byte("package main\nfunc f() {\n\tx := val ?? \"default\"\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "uses reflect for zero check" {
+			expect strings.Contains(goCode, "reflect.ValueOf")
+			expect strings.Contains(goCode, "IsZero")
+		}
+		then "injects reflect import" {
+			expect strings.Contains(goCode, "\"reflect\"")
+		}
+	}
+}
+
+unit "Transpile.SafeNavigation" {
+	given "a safe navigation expression" {
+		source := []byte("package main\nfunc f() {\n\tx := obj?.name\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "uses reflect for field access" {
+			expect strings.Contains(goCode, "reflect.ValueOf")
+			expect strings.Contains(goCode, "FieldByName")
+		}
+		then "checks for nil" {
+			expect strings.Contains(goCode, "== nil")
+		}
+	}
+}
+
+unit "Transpile.ErrorPropagation" {
+	given "a try expression" {
+		source := []byte("package main\nfunc doSomething() (string, error) { return \"ok\", nil }\nfunc f() (string, error) {\n\tx := try doSomething()\n\treturn x, nil\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates propagation assignment" {
+			expect strings.Contains(goCode, "x, _fwTryErr0 := doSomething()")
+			expect strings.Contains(goCode, "return *new(string), _fwTryErr0")
+		}
+	}
+}
+
+unit "Transpile.Pipeline" {
+	given "a pipeline expression" {
+		source := []byte("package main\nfunc f() {\n\tx := data |> transform\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "converts to function application" {
+			expect strings.Contains(goCode, "transform(data)")
+		}
+		then "eliminates pipe operator" {
+			reject strings.Contains(goCode, "|>")
+		}
+	}
+}
+
+unit "Transpile.FString" {
+	given "an f-string with interpolation" {
+		source := []byte("package main\nfunc f() {\n\tx := f\"hello {name}\"\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "converts to fmt.Sprintf" {
+			expect strings.Contains(goCode, "fmt.Sprintf")
+			expect strings.Contains(goCode, "hello %v")
+		}
+		then "injects fmt import" {
+			expect strings.Contains(goCode, "\"fmt\"")
+		}
+	}
+
+	given "an f-string without interpolation" {
+		source := []byte("package main\nfunc f() {\n\tx := f\"hello\"\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "becomes a regular string" {
+			expect strings.Contains(goCode, "\"hello\"")
+			reject strings.Contains(goCode, "Sprintf")
+		}
+	}
+}
+
+unit "Transpile.ListComprehension" {
+	given "a list comprehension without filter" {
+		source := []byte("package main\nfunc f() {\n\tx := [x for x in items]\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates IIFE returning slice" {
+			expect strings.Contains(goCode, "func() []interface{}")
+		}
+		then "ranges over iterable" {
+			expect strings.Contains(goCode, "range items")
+		}
+	}
+
+	given "a list comprehension with filter" {
+		source := []byte("package main\nfunc f() {\n\tx := [x for x in items if x > 0]\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "includes filter condition" {
+			expect strings.Contains(goCode, "if x > 0")
+		}
+	}
+}
+
+unit "Transpile.Match" {
+	given "a match expression" {
+		source := []byte("package main\nfunc f() {\n\tx := match val {\n\t\t1 => \"one\",\n\t\t2 => \"two\",\n\t}\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates switch in IIFE" {
+			expect strings.Contains(goCode, "switch val")
+		}
+		then "has exhaustive default panic" {
+			expect strings.Contains(goCode, "panic(")
+			expect strings.Contains(goCode, "non-exhaustive match")
+		}
+	}
+
+	given "a match with guard clause" {
+		source := []byte("package main\nfunc f() {\n\tx := match val {\n\t\t1 if val > 0 => \"positive one\",\n\t\t0 => \"zero\",\n\t}\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "includes guard clause" {
+			expect strings.Contains(goCode, "if val > 0")
+		}
+	}
+}
+
+// =============================================================================
+// CONTROL FLOW
+// =============================================================================
+
+unit "Transpile.ForIn" {
+	given "for-in over a slice" {
+		source := []byte("package main\nfunc f() {\n\tfor v in items {\n\t\t_ = v\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "converts to range loop" {
+			expect strings.Contains(goCode, "for _, v := range items")
+		}
+	}
+
+	given "for-in over a range expression" {
+		source := []byte("package main\nfunc f() {\n\tfor i in 0 .. 10 {\n\t\t_ = i\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "converts to C-style for loop" {
+			expect strings.Contains(goCode, "for i := 0; i < 10; i++")
+		}
+	}
+
+	given "for-in with index" {
+		source := []byte("package main\nfunc f() {\n\tfor i, v in items {\n\t\t_ = i\n\t\t_ = v\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "preserves both index and value" {
+			expect strings.Contains(goCode, "for i, v := range items")
+		}
+	}
+}
+
+unit "Transpile.Guard" {
+	given "a guard statement" {
+		source := []byte("package main\nfunc f() {\n\tguard x > 0 else {\n\t\treturn\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "negates the condition" {
+			expect strings.Contains(goCode, "if !(x > 0)")
+		}
+		then "eliminates guard keyword" {
+			reject strings.Contains(goCode, "guard ")
+		}
+	}
+}
+
+unit "Transpile.ControlSugar" {
+	given "an unless statement" {
+		source := []byte("package main\nfunc f() {\n\tunless x > 0 {\n\t\treturn\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles to negated if" {
+			expect err == nil
+			expect strings.Contains(goCode, "if !(x > 0)")
+		}
+	}
+
+	given "an until statement" {
+		source := []byte("package main\nfunc f() {\n\tuntil x > 10 {\n\t\tx = x + 1\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles to negated for" {
+			expect err == nil
+			expect strings.Contains(goCode, "for !(x > 10)")
+		}
+	}
+
+	given "a repeat statement" {
+		source := []byte("package main\nfunc f() {\n\trepeat 5 {\n\t\tfmt.Println(\"hi\")\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles to counted for loop" {
+			expect err == nil
+			expect strings.Contains(goCode, "for _i := 0; _i < 5; _i++")
+		}
+	}
+
+	given "a swap statement" {
+		source := []byte("package main\nfunc f() {\n\tswap(a, b)\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles to tuple swap" {
+			expect err == nil
+			expect strings.Contains(goCode, "a, b = b, a")
+		}
+	}
+}
+
+unit "Transpile.DeferError" {
+	given "a defer! statement" {
+		source := []byte("package main\nfunc f() {\n\tdefer! f.Close()\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "wraps in error-capturing defer" {
+			expect strings.Contains(goCode, "defer func()")
+			expect strings.Contains(goCode, "_cerr")
+			expect strings.Contains(goCode, "f.Close()")
+		}
+	}
+}
+
+unit "Transpile.IfLet" {
+	given "an if-let statement" {
+		source := []byte("package main\nfunc f() {\n\tif let x = getValue() {\n\t\t_ = x\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "converts to init-if with nil check" {
+			expect strings.Contains(goCode, "if x := getValue(); x != nil")
+		}
+	}
+
+	given "an if-let with else" {
+		source := []byte("package main\nfunc f() {\n\tif let x = getValue() {\n\t\t_ = x\n\t} else {\n\t\tpanic(\"nil\")\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "includes else block" {
+			expect strings.Contains(goCode, "else")
+		}
+	}
+}
+
+// =============================================================================
+// GENERIC TYPES
+// =============================================================================
+
+unit "Transpile.ResultType" {
+	given "code using Result[T]" {
+		source := []byte("package main\nfunc divide(a, b int) Result[int] {\n\treturn Ok[int](a / b)\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "injects Result type definition" {
+			expect strings.Contains(goCode, "type Result[T any] struct")
+		}
+		then "injects Ok and Err constructors" {
+			expect strings.Contains(goCode, "func Ok[T any]")
+			expect strings.Contains(goCode, "func Err[T any]")
+		}
+		then "injects Unwrap method" {
+			expect strings.Contains(goCode, "func (r Result[T]) Unwrap()")
+		}
+	}
+}
+
+unit "Transpile.OptionType" {
+	given "code using Option[T]" {
+		source := []byte("package main\nfunc find(id int) Option[string] {\n\treturn Some[string](\"alice\")\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "injects Option type definition" {
+			expect strings.Contains(goCode, "type Option[T any] struct")
+		}
+		then "injects Some and None constructors" {
+			expect strings.Contains(goCode, "func Some[T any]")
+			expect strings.Contains(goCode, "func None[T any]")
+		}
+	}
+}
+
+unit "Transpile.NoGenericTypesWhenUnused" {
+	given "code that does not use Result or Option" {
+		source := []byte("package main\nfunc f() {\n\tlet x = 42\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "does not inject Result" {
+			reject strings.Contains(goCode, "type Result[T any]")
+		}
+		then "does not inject Option" {
+			reject strings.Contains(goCode, "type Option[T any]")
+		}
+	}
+}
+
+// =============================================================================
+// LOW-LEVEL MEMORY FEATURES
+// =============================================================================
+
+unit "Transpile.Arena" {
+	given "an arena block" {
+		source := []byte("package main\nfunc f() {\n\tarena scratch {\n\t\tx := 1\n\t\t_ = x\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates arena allocator" {
+			expect strings.Contains(goCode, "_arena_scratch")
+			expect strings.Contains(goCode, "_arenaAlloc_scratch")
+			expect strings.Contains(goCode, "unsafe.Pointer")
+		}
+		then "injects unsafe import" {
+			expect strings.Contains(goCode, "\"unsafe\"")
+		}
+	}
+
+	given "an arena block with explicit size" {
+		source := []byte("package main\nfunc f() {\n\tarena scratch 2048 {\n\t\tx := 1\n\t\t_ = x\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "uses custom size" {
+			expect err == nil
+			expect strings.Contains(goCode, "_arenaSize := 2048")
+		}
+	}
+}
+
+unit "Transpile.PinUnpin" {
+	given "pin and unpin statements" {
+		source := []byte("package main\nfunc f() {\n\tpin data\n\tunpin data\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates runtime calls" {
+			expect strings.Contains(goCode, "runtime.SetFinalizer")
+			expect strings.Contains(goCode, "runtime.KeepAlive(data)")
+		}
+		then "injects runtime import" {
+			expect strings.Contains(goCode, "\"runtime\"")
+		}
+	}
+}
+
+unit "Transpile.UnsafeCast" {
+	given "an unsafe cast expression" {
+		source := []byte("package main\nfunc f() {\n\tx := unsafe cast(s, int)\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates helper-backed cast" {
+			expect strings.Contains(goCode, "_fwUnsafeCast[int](s)")
+			expect strings.Contains(goCode, "func _fwUnsafeCast[To any, From any]")
+		}
+	}
+}
+
+// =============================================================================
+// CONCURRENCY FEATURES
+// =============================================================================
+
+unit "Transpile.FanOut" {
+	given "a fan out block" {
+		source := []byte("package main\nfunc f() {\n\tfan out workers, 10 {\n\t\tdoWork()\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates WaitGroup pattern" {
+			expect strings.Contains(goCode, "sync.WaitGroup")
+			expect strings.Contains(goCode, "go func()")
+			expect strings.Contains(goCode, ".Wait()")
+		}
+		then "uses correct worker count" {
+			expect strings.Contains(goCode, "_wi < 10")
+		}
+		then "injects sync import" {
+			expect strings.Contains(goCode, "\"sync\"")
+		}
+	}
+}
+
+unit "Transpile.Concurrent" {
+	given "a concurrent block" {
+		source := []byte("package main\nfunc f() {\n\tconcurrent {\n\t\tfetch(\"url1\")\n\t\tfetch(\"url2\")\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "wraps each statement in goroutine" {
+			expect strings.Contains(goCode, "go func()")
+			expect strings.Contains(goCode, "_wg.Wait()")
+		}
+	}
+}
+
+unit "Transpile.Throttle" {
+	given "a throttle block" {
+		source := []byte("package main\nfunc f() {\n\tthrottle 100 {\n\t\tdoWork()\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates throttle helper" {
+			expect strings.Contains(goCode, `_fwThrottleWait("throttle_`)
+			expect strings.Contains(goCode, "func _fwThrottleWait(name string, rate int, burst int)")
+		}
+	}
+}
+
+unit "Transpile.Retry" {
+	given "a retry block with defaults" {
+		source := []byte("package main\nfunc f() {\n\tretry 3 {\n\t\tdoWork()\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates retry loop" {
+			expect strings.Contains(goCode, "_attempt < 3")
+			expect strings.Contains(goCode, "time.Sleep")
+		}
+	}
+
+	given "a retry block with custom params" {
+		source := []byte("package main\nfunc f() {\n\tretry 5 delay 500 backoff 2 {\n\t\tdoWork()\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "uses custom delay and backoff" {
+			expect err == nil
+			expect strings.Contains(goCode, "_attempt < 5")
+		}
+	}
+}
+
+unit "Transpile.Breaker" {
+	given "a circuit breaker block" {
+		source := []byte("package main\nfunc f() {\n\tbreaker \"myservice\" {\n\t\tcallService()\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates circuit breaker logic" {
+			expect strings.Contains(goCode, "_breaker_myservice_failures")
+			expect strings.Contains(goCode, "time.Since")
+		}
+	}
+}
+
+// =============================================================================
+// IMPORT INJECTION
+// =============================================================================
+
+unit "Transpile.ImportInjection" {
+	given "code that needs reflect" {
+		source := []byte("package main\nfunc f() {\n\tx := val ?? \"default\"\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "auto-injects reflect" {
+			expect err == nil
+			expect strings.Contains(goCode, "\"reflect\"")
+		}
+	}
+
+	given "code that needs fmt" {
+		source := []byte("package main\nfunc f() {\n\tx := match val {\n\t\t1 => \"one\",\n\t}\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "auto-injects fmt" {
+			expect err == nil
+			expect strings.Contains(goCode, "\"fmt\"")
+		}
+	}
+
+	given "code that needs no extra imports" {
+		source := []byte("package main\nfunc f() {\n\tlet x = 42\n\t_ = x\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "injects nothing" {
+			expect err == nil
+			reject strings.Contains(goCode, "import")
+		}
+	}
+}
+
+// =============================================================================
+// COMPOSITION: Multiple features together
+// =============================================================================
+
+unit "Transpile.Composition" {
+	given "let + fstring + guard together" {
+		source := []byte("package main\nimport \"fmt\"\nfunc greet(name string) string {\n\tguard name != \"\" else {\n\t\treturn \"anonymous\"\n\t}\n\tlet greeting = f\"hello {name}\"\n\treturn greeting\n}\nfunc main() { fmt.Println(greet(\"alice\")) }\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "all features are present" {
+			expect strings.Contains(goCode, "if !(name != \"\")")
+			expect strings.Contains(goCode, "greeting := fmt.Sprintf")
+		}
+		then "no fw keywords remain" {
+			reject strings.Contains(goCode, "guard ")
+			reject strings.Contains(goCode, "let ")
+		}
+	}
+
+	given "enum + impl + derive together" {
+		source := []byte("package main\ntype Vec2 struct {\n\tX float64\n\tY float64\n}\nderive Equal for Vec2\nimpl Vec2 {\n\tfunc Add(other Vec2) Vec2 {\n\t\treturn Vec2{X: self.X + other.X, Y: self.Y + other.Y}\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "generates both Equal and methods" {
+			expect strings.Contains(goCode, "func (x Vec2) Equal(other Vec2) bool")
+			expect strings.Contains(goCode, "func (self Vec2)")
+		}
+	}
+
+	given "pipeline + for_in + fstring together" {
+		source := []byte("package main\nimport \"fmt\"\nimport \"strings\"\nfunc main() {\n\tnames := []string{\"alice\", \"bob\"}\n\tfor name in names {\n\t\tresult := name |> strings.ToUpper\n\t\tmsg := f\"user: {result}\"\n\t\tfmt.Println(msg)\n\t}\n}\n")
+		goCode, err := ferrouswheel.Transpile(source)
+
+		then "transpiles without error" {
+			expect err == nil
+		}
+		then "pipeline becomes function call" {
+			expect strings.Contains(goCode, "strings.ToUpper(name)")
+		}
+		then "for-in becomes range" {
+			expect strings.Contains(goCode, "for _, name := range names")
+		}
+		then "fstring becomes Sprintf" {
+			expect strings.Contains(goCode, "fmt.Sprintf")
+		}
+	}
+}
+
+// =============================================================================
+// BENCHMARKS
+// =============================================================================
+
+benchmark "transpile simple let" {
+	setup {
+		source := []byte("package main\nfunc f() {\n\tlet x = 42\n\t_ = x\n}\n")
+	}
+	measure {
+		ferrouswheel.Transpile(source)
+	}
+}
+
+benchmark "transpile complex program" {
+	setup {
+		source := []byte("package main\nimport \"fmt\"\nenum Color {\n\tRed,\n\tGreen,\n\tBlue(int),\n}\nderive Equal for Color\nimpl Color {\n\tfunc Tag() int {\n\t\treturn self.tag\n\t}\n}\nfunc main() {\n\tlet c = Red()\n\tfor i in 0 .. 10 {\n\t\tfmt.Println(f\"color tag: {c.Tag()}\")\n\t\t_ = i\n\t}\n}\n")
+	}
+	measure {
+		ferrouswheel.Transpile(source)
+	}
+}

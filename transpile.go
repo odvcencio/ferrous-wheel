@@ -1,6 +1,7 @@
 package ferrouswheel
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"sync"
@@ -21,6 +22,225 @@ func getFWLanguage() (*gotreesitter.Language, error) {
 	return fwLangCached, fwLangErr
 }
 
+func validateTopLevelOnly(root *gotreesitter.Node, lang *gotreesitter.Language) error {
+	type validationState struct {
+		functionDepth int
+		inConcurrent  bool
+		inBreaker     bool
+		inThrottle    bool
+	}
+
+	var walk func(n *gotreesitter.Node, state validationState) error
+	walk = func(n *gotreesitter.Node, state validationState) error {
+		if n == nil {
+			return nil
+		}
+
+		nodeType := n.Type(lang)
+		if state.functionDepth > 0 {
+			switch nodeType {
+			case "enum_declaration", "derive_declaration", "impl_block":
+				return fmt.Errorf("%s must appear at top level", nodeType)
+			}
+		}
+
+		if state.inConcurrent {
+			switch nodeType {
+			case "let_declaration", "let_multi_declaration", "short_var_declaration", "var_declaration", "const_declaration":
+				return fmt.Errorf("%s is not supported inside concurrent blocks; predeclare variables outside the block", nodeType)
+			}
+		}
+
+		if state.inBreaker && nodeType == "return_statement" {
+			return fmt.Errorf("return_statement is not supported inside breaker blocks")
+		}
+
+		if state.inThrottle {
+			switch nodeType {
+			case "for_statement", "for_in_statement", "for_in_index_statement", "repeat_statement", "until_statement":
+				return fmt.Errorf("%s is not supported inside throttle blocks; throttle currently gates block entry, not each loop iteration", nodeType)
+			}
+		}
+
+		nextState := state
+		switch nodeType {
+		case "function_declaration", "method_declaration", "func_literal", "lambda_expression":
+			nextState.functionDepth++
+		case "concurrent_block":
+			nextState.inConcurrent = true
+		case "breaker_block":
+			nextState.inBreaker = true
+		case "throttle_block":
+			nextState.inThrottle = true
+		}
+
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			if err := walk(n.NamedChild(i), nextState); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return walk(root, validationState{})
+}
+
+func validateTryUsage(root *gotreesitter.Node, lang *gotreesitter.Language, src []byte) error {
+	text := func(n *gotreesitter.Node) string {
+		return string(src[n.StartByte():n.EndByte()])
+	}
+
+	resultTypes := func(resultNode *gotreesitter.Node) []string {
+		if resultNode == nil {
+			return nil
+		}
+		if resultNode.Type(lang) != "parameter_list" {
+			return []string{text(resultNode)}
+		}
+
+		var types []string
+		for i := 0; i < int(resultNode.NamedChildCount()); i++ {
+			param := resultNode.NamedChild(i)
+			if param == nil || param.Type(lang) != "parameter_declaration" {
+				continue
+			}
+			typeNode := param.ChildByFieldName("type", lang)
+			if typeNode == nil {
+				continue
+			}
+
+			nameCount := 0
+			for j := 0; j < int(param.ChildCount()); j++ {
+				if param.FieldNameForChild(j, lang) == "name" {
+					nameCount++
+				}
+			}
+			if nameCount == 0 {
+				nameCount = 1
+			}
+
+			typ := text(typeNode)
+			for range nameCount {
+				types = append(types, typ)
+			}
+		}
+		return types
+	}
+
+	trySiteSupported := func(n *gotreesitter.Node) bool {
+		parent := n.Parent()
+		if parent == nil {
+			return false
+		}
+
+		switch parent.Type(lang) {
+		case "let_declaration", "let_multi_declaration":
+			return parent.ChildByFieldName("value", lang) == n
+		case "expression_list":
+			site := parent.Parent()
+			if site == nil {
+				return false
+			}
+			switch site.Type(lang) {
+			case "short_var_declaration":
+				right := site.ChildByFieldName("right", lang)
+				return right == parent && right.NamedChildCount() == 1 && right.NamedChild(0) == n
+			case "assignment_statement":
+				right := site.ChildByFieldName("right", lang)
+				if right == nil || right != parent || right.NamedChildCount() != 1 || right.NamedChild(0) != n {
+					return false
+				}
+				for i := 0; i < int(site.ChildCount()); i++ {
+					if site.FieldNameForChild(i, lang) == "operator" {
+						return text(site.Child(i)) == "="
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	validateTryNode := func(n *gotreesitter.Node) error {
+		expr := n.ChildByFieldName("expr", lang)
+		if expr == nil || expr.Type(lang) != "call_expression" {
+			return fmt.Errorf("try currently only supports direct call expressions")
+		}
+		if !trySiteSupported(n) {
+			return fmt.Errorf("try is only supported on the right-hand side of let, tuple let, :=, or = assignments")
+		}
+
+		for cur := n.Parent(); cur != nil; cur = cur.Parent() {
+			switch cur.Type(lang) {
+			case "retry_block":
+				return nil
+			case "lambda_expression":
+				return fmt.Errorf("try is not supported inside lambda expressions")
+			case "concurrent_block", "breaker_block", "fan_out_block":
+				return fmt.Errorf("try is not supported directly inside %s; wrap the call in retry or handle the error explicitly", cur.Type(lang))
+			case "function_declaration", "method_declaration", "func_literal":
+				types := resultTypes(cur.ChildByFieldName("result", lang))
+				if len(types) == 0 || types[len(types)-1] != "error" {
+					return fmt.Errorf("try requires the enclosing %s to return a trailing error", cur.Type(lang))
+				}
+				return nil
+			}
+		}
+
+		return fmt.Errorf("try must appear inside an error-returning function, method, func literal, or retry block")
+	}
+
+	var walk func(n *gotreesitter.Node) error
+	walk = func(n *gotreesitter.Node) error {
+		if n == nil {
+			return nil
+		}
+		if n.Type(lang) == "error_propagation" {
+			if err := validateTryNode(n); err != nil {
+				return err
+			}
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			if err := walk(n.NamedChild(i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return walk(root)
+}
+
+func validateNoUnparsedText(root *gotreesitter.Node, src []byte) error {
+	if root == nil {
+		return nil
+	}
+
+	// gotreesitter can omit some inner tokens from custom DSL nodes (for example
+	// `impl` method names and `defer!` prefixes), so only validate uncovered text
+	// between top-level siblings where recovery garbage like `package mx n` appears.
+	prev := uint32(0)
+	for i := 0; i < root.ChildCount(); i++ {
+		child := root.Child(i)
+		if child == nil || child.EndByte() <= child.StartByte() {
+			continue
+		}
+		if child.StartByte() > prev {
+			if len(bytes.TrimSpace(src[prev:child.StartByte()])) > 0 {
+				return fmt.Errorf("parse errors in ferrous-wheel source")
+			}
+		}
+		if child.EndByte() > prev {
+			prev = child.EndByte()
+		}
+	}
+	if uint32(len(src)) > prev {
+		if len(bytes.TrimSpace(src[prev:])) > 0 {
+			return fmt.Errorf("parse errors in ferrous-wheel source")
+		}
+	}
+	return nil
+}
+
 // Transpile converts .fw source to valid Go code.
 func Transpile(source []byte) (string, error) {
 	lang, err := getFWLanguage()
@@ -38,6 +258,15 @@ func Transpile(source []byte) (string, error) {
 	if root.HasError() {
 		return "", fmt.Errorf("parse errors in ferrous-wheel source")
 	}
+	if err := validateNoUnparsedText(root, source); err != nil {
+		return "", err
+	}
+	if err := validateTopLevelOnly(root, lang); err != nil {
+		return "", err
+	}
+	if err := validateTryUsage(root, lang, source); err != nil {
+		return "", err
+	}
 
 	t := &fwTranspiler{src: source, lang: lang}
 	result := t.emit(root)
@@ -47,6 +276,7 @@ func Transpile(source []byte) (string, error) {
 
 	result = t.injectImports(result)
 	result = t.injectGenericTypes(result)
+	result = t.injectSupportCode(result)
 	return result, nil
 }
 
@@ -64,8 +294,26 @@ type fwTranspiler struct {
 	needsSyscall    bool
 	needsSync       bool
 	needsTime       bool
+	needsBreaker    bool
+	needsThrottle   bool
+	needsFanIn      bool
+	needsUnsafeCast bool
 	implReceiver    string // non-empty when inside an impl block
 	lastPipeValue   string // set by emitPipeline for selector reconstruction
+	tryTargets      []tryTarget
+	tryCounter      int
+}
+
+type tryTargetKind int
+
+const (
+	tryTargetFunction tryTargetKind = iota
+	tryTargetRetry
+)
+
+type tryTarget struct {
+	kind        tryTargetKind
+	returnTypes []string
 }
 
 func (t *fwTranspiler) text(n *gotreesitter.Node) string {
@@ -78,6 +326,156 @@ func (t *fwTranspiler) nodeType(n *gotreesitter.Node) string {
 
 func (t *fwTranspiler) childByField(n *gotreesitter.Node, field string) *gotreesitter.Node {
 	return n.ChildByFieldName(field, t.lang)
+}
+
+func (t *fwTranspiler) callableTryTarget(n *gotreesitter.Node) (tryTarget, bool) {
+	resultNode := t.childByField(n, "result")
+	returnTypes := t.resultTypes(resultNode)
+	if len(returnTypes) == 0 || returnTypes[len(returnTypes)-1] != "error" {
+		return tryTarget{}, false
+	}
+	return tryTarget{kind: tryTargetFunction, returnTypes: returnTypes}, true
+}
+
+func (t *fwTranspiler) resultTypes(resultNode *gotreesitter.Node) []string {
+	if resultNode == nil {
+		return nil
+	}
+	if t.nodeType(resultNode) != "parameter_list" {
+		return []string{t.text(resultNode)}
+	}
+
+	var types []string
+	for i := 0; i < int(resultNode.NamedChildCount()); i++ {
+		param := resultNode.NamedChild(i)
+		if param == nil || t.nodeType(param) != "parameter_declaration" {
+			continue
+		}
+		typeNode := t.childByField(param, "type")
+		if typeNode == nil {
+			continue
+		}
+
+		nameCount := 0
+		for j := 0; j < int(param.ChildCount()); j++ {
+			if param.FieldNameForChild(j, t.lang) == "name" {
+				nameCount++
+			}
+		}
+		if nameCount == 0 {
+			nameCount = 1
+		}
+
+		typ := t.text(typeNode)
+		for range nameCount {
+			types = append(types, typ)
+		}
+	}
+	return types
+}
+
+func (t *fwTranspiler) withTryTarget(target tryTarget, emit func() string) string {
+	t.tryTargets = append(t.tryTargets, target)
+	defer func() {
+		t.tryTargets = t.tryTargets[:len(t.tryTargets)-1]
+	}()
+	return emit()
+}
+
+func (t *fwTranspiler) currentTryTarget() (tryTarget, bool) {
+	if len(t.tryTargets) == 0 {
+		return tryTarget{}, false
+	}
+	return t.tryTargets[len(t.tryTargets)-1], true
+}
+
+func (t *fwTranspiler) nextTryErrName() string {
+	name := fmt.Sprintf("_fwTryErr%d", t.tryCounter)
+	t.tryCounter++
+	return name
+}
+
+func (t *fwTranspiler) expressionListItems(listNode *gotreesitter.Node) []string {
+	if listNode == nil {
+		return nil
+	}
+	var items []string
+	for i := 0; i < int(listNode.NamedChildCount()); i++ {
+		items = append(items, t.emit(listNode.NamedChild(i)))
+	}
+	return items
+}
+
+func (t *fwTranspiler) singleTryFromExpressionList(listNode *gotreesitter.Node) *gotreesitter.Node {
+	if listNode == nil || listNode.NamedChildCount() != 1 {
+		return nil
+	}
+	child := listNode.NamedChild(0)
+	if child == nil || t.nodeType(child) != "error_propagation" {
+		return nil
+	}
+	return child
+}
+
+func (t *fwTranspiler) tryReturnStatement(errName string) string {
+	target, ok := t.currentTryTarget()
+	if !ok {
+		return fmt.Sprintf("panic(%s)", errName)
+	}
+
+	switch target.kind {
+	case tryTargetRetry:
+		return "return " + errName
+	case tryTargetFunction:
+		if len(target.returnTypes) == 1 {
+			return "return " + errName
+		}
+
+		values := make([]string, 0, len(target.returnTypes))
+		for i, typ := range target.returnTypes {
+			if i == len(target.returnTypes)-1 {
+				values = append(values, errName)
+				continue
+			}
+			values = append(values, fmt.Sprintf("*new(%s)", typ))
+		}
+		return "return " + strings.Join(values, ", ")
+	default:
+		return fmt.Sprintf("panic(%s)", errName)
+	}
+}
+
+func (t *fwTranspiler) emitTryAssignment(lhs []string, op string, tryNode *gotreesitter.Node) string {
+	expr := t.childByField(tryNode, "expr")
+	if expr == nil || len(lhs) == 0 {
+		return t.text(tryNode)
+	}
+
+	errName := t.nextTryErrName()
+	callText := t.emit(expr)
+	var b strings.Builder
+
+	switch op {
+	case ":=":
+		fmt.Fprintf(&b, "%s, %s := %s\n", strings.Join(lhs, ", "), errName, callText)
+	case "=":
+		fmt.Fprintf(&b, "var %s error\n", errName)
+		fmt.Fprintf(&b, "%s, %s = %s\n", strings.Join(lhs, ", "), errName, callText)
+	default:
+		return t.text(tryNode)
+	}
+
+	fmt.Fprintf(&b, "if %s != nil {\n\t%s\n}", errName, t.tryReturnStatement(errName))
+	return b.String()
+}
+
+func (t *fwTranspiler) emitCallableWithTryTarget(n *gotreesitter.Node) string {
+	if target, ok := t.callableTryTarget(n); ok {
+		return t.withTryTarget(target, func() string {
+			return t.emitDefault(n)
+		})
+	}
+	return t.emitDefault(n)
 }
 
 func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
@@ -102,6 +500,10 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitLambda(n)
 	case "call_expression":
 		return t.emitCall(n)
+	case "method_declaration":
+		return t.emitMethodDecl(n)
+	case "func_literal":
+		return t.emitFuncLiteral(n)
 	case "derive_declaration":
 		return t.emitDerive(n)
 	case "if_let_statement":
@@ -132,6 +534,10 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitSwap(n)
 	case "function_declaration":
 		return t.emitFunctionDecl(n)
+	case "short_var_declaration":
+		return t.emitShortVarDecl(n)
+	case "assignment_statement":
+		return t.emitAssignment(n)
 	// Low-level features
 	case "arena_block":
 		return t.emitArena(n)
@@ -273,6 +679,9 @@ func (t *fwTranspiler) emitLet(n *gotreesitter.Node) string {
 	if nameNode == nil || value == nil {
 		return t.text(n)
 	}
+	if t.nodeType(value) == "error_propagation" {
+		return t.emitTryAssignment([]string{t.text(nameNode)}, ":=", value)
+	}
 	return fmt.Sprintf("%s := %s", t.text(nameNode), t.emit(value))
 }
 
@@ -293,6 +702,9 @@ func (t *fwTranspiler) emitLetMulti(n *gotreesitter.Node) string {
 	}
 	if len(names) == 0 {
 		return t.text(n)
+	}
+	if t.nodeType(value) == "error_propagation" {
+		return t.emitTryAssignment(names, ":=", value)
 	}
 
 	return fmt.Sprintf("%s := %s", strings.Join(names, ", "), t.emit(value))
@@ -359,36 +771,12 @@ func (t *fwTranspiler) emitNullCoalesce(n *gotreesitter.Node) string {
 	return fmt.Sprintf("func() interface{} { _v := reflect.ValueOf(%s); if _v.IsValid() && !_v.IsZero() { return %s }; return %s }()", l, l, t.emit(right))
 }
 
-// try expr -> error propagation (standalone, not inside a call)
+// try lowering is handled at the statement site after validation.
 func (t *fwTranspiler) emitErrorProp(n *gotreesitter.Node) string {
-	expr := t.childByField(n, "expr")
-	if expr == nil {
-		return t.text(n)
-	}
-	e := t.emit(expr)
-	return fmt.Sprintf("func() interface{} { _v, _err := %s; if _err != nil { return _err }; return _v }()", e)
+	return t.text(n)
 }
 
-// call_expression: check if the function is an error_propagation (try funcName)(args)
-// In that case, wrap the entire call in the error-handling IIFE.
 func (t *fwTranspiler) emitCall(n *gotreesitter.Node) string {
-	if n.ChildCount() >= 2 {
-		fn := n.Child(0)
-		if t.nodeType(fn) == "error_propagation" {
-			// try funcName(args) → func() interface{} { _v, _err := funcName(args); ... }()
-			innerExpr := t.childByField(fn, "expr")
-			if innerExpr != nil {
-				funcName := t.emit(innerExpr)
-				// Collect the rest of the call (argument list)
-				var args string
-				for i := 1; i < int(n.ChildCount()); i++ {
-					args += t.emit(n.Child(i))
-				}
-				fullCall := funcName + args
-				return fmt.Sprintf("func() interface{} { _v, _err := %s; if _err != nil { return _err }; return _v }()", fullCall)
-			}
-		}
-	}
 	return t.emitDefault(n)
 }
 
@@ -402,7 +790,19 @@ func (t *fwTranspiler) emitSafeNav(n *gotreesitter.Node) string {
 	t.needsReflect = true
 	o := t.emit(obj)
 	f := t.text(field)
-	return fmt.Sprintf("func() interface{} { _o := %s; if _o == nil { return nil }; return reflect.ValueOf(_o).Elem().FieldByName(%q).Interface() }()", o, f)
+	return fmt.Sprintf(`func() interface{} {
+		_o := any(%s)
+		_v := reflect.ValueOf(_o)
+		if !_v.IsValid() { return nil }
+		for _v.Kind() == reflect.Interface || _v.Kind() == reflect.Pointer {
+			if _v.IsNil() { return nil }
+			_v = _v.Elem()
+		}
+		if _v.Kind() != reflect.Struct { return nil }
+		_f := _v.FieldByName(%q)
+		if !_f.IsValid() { return nil }
+		return _f.Interface()
+	}()`, o, f)
 }
 
 // fn(x, y) body -> func literal
@@ -445,17 +845,53 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 
 // emitFunctionDecl handles function_declaration, injecting receiver when inside impl block.
 func (t *fwTranspiler) emitFunctionDecl(n *gotreesitter.Node) string {
+	text := t.emitCallableWithTryTarget(n)
 	if t.implReceiver == "" {
-		return t.emitDefault(n)
+		return text
 	}
 	// Inside an impl block, add receiver to function declarations.
 	// function_declaration: func name(params) returnType { body }
 	// Transform to: func (self Type) name(params) returnType { body }
-	text := t.emitDefault(n)
 	if strings.HasPrefix(text, "func ") {
 		return "func (self " + t.implReceiver + ") " + text[5:]
 	}
 	return text
+}
+
+func (t *fwTranspiler) emitMethodDecl(n *gotreesitter.Node) string {
+	return t.emitCallableWithTryTarget(n)
+}
+
+func (t *fwTranspiler) emitFuncLiteral(n *gotreesitter.Node) string {
+	return t.emitCallableWithTryTarget(n)
+}
+
+func (t *fwTranspiler) emitShortVarDecl(n *gotreesitter.Node) string {
+	right := t.childByField(n, "right")
+	tryNode := t.singleTryFromExpressionList(right)
+	if tryNode == nil {
+		return t.emitDefault(n)
+	}
+
+	lhs := t.expressionListItems(t.childByField(n, "left"))
+	if len(lhs) == 0 {
+		return t.emitDefault(n)
+	}
+	return t.emitTryAssignment(lhs, ":=", tryNode)
+}
+
+func (t *fwTranspiler) emitAssignment(n *gotreesitter.Node) string {
+	right := t.childByField(n, "right")
+	tryNode := t.singleTryFromExpressionList(right)
+	if tryNode == nil {
+		return t.emitDefault(n)
+	}
+
+	lhs := t.expressionListItems(t.childByField(n, "left"))
+	if len(lhs) == 0 {
+		return t.emitDefault(n)
+	}
+	return t.emitTryAssignment(lhs, "=", tryNode)
 }
 
 // derive Stringer for Color -> generate interface impl methods
@@ -477,8 +913,18 @@ func (t *fwTranspiler) emitDerive(n *gotreesitter.Node) string {
 		b.WriteString("}\n")
 	case "JSON":
 		t.needsJSON = true
+		aliasName := fmt.Sprintf("_%sJSONAlias", typeName)
+		fmt.Fprintf(&b, "type %s %s\n", aliasName, typeName)
 		fmt.Fprintf(&b, "func (x %s) MarshalJSON() ([]byte, error) {\n", typeName)
-		fmt.Fprintf(&b, "\treturn json.Marshal(struct{ Value %s }{x})\n", typeName)
+		fmt.Fprintf(&b, "\treturn json.Marshal(%s(x))\n", aliasName)
+		b.WriteString("}\n")
+		fmt.Fprintf(&b, "func (x *%s) UnmarshalJSON(data []byte) error {\n", typeName)
+		fmt.Fprintf(&b, "\tvar tmp %s\n", aliasName)
+		b.WriteString("\tif err := json.Unmarshal(data, &tmp); err != nil {\n")
+		b.WriteString("\t\treturn err\n")
+		b.WriteString("\t}\n")
+		fmt.Fprintf(&b, "\t*x = %s(tmp)\n", typeName)
+		b.WriteString("\treturn nil\n")
 		b.WriteString("}\n")
 	case "Equal":
 		fmt.Fprintf(&b, "func (x %s) Equal(other %s) bool {\n", typeName, typeName)
@@ -577,15 +1023,24 @@ func (t *fwTranspiler) emitForInIndex(n *gotreesitter.Node) string {
 		t.text(indexNode), t.text(varNode), t.emit(iterable), block)
 }
 
-// findBlock finds the first block child node and emits it.
-func (t *fwTranspiler) findBlock(n *gotreesitter.Node) string {
+// findBlockNode finds the first block child node.
+func (t *fwTranspiler) findBlockNode(n *gotreesitter.Node) *gotreesitter.Node {
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		c := n.NamedChild(i)
 		if t.nodeType(c) == "block" {
-			return t.emit(c)
+			return c
 		}
 	}
-	return "{}"
+	return nil
+}
+
+// findBlock finds the first block child node and emits it.
+func (t *fwTranspiler) findBlock(n *gotreesitter.Node) string {
+	block := t.findBlockNode(n)
+	if block == nil {
+		return "{}"
+	}
+	return t.emit(block)
 }
 
 // f"hello {name}" -> fmt.Sprintf("hello %v", name)
@@ -636,12 +1091,16 @@ func (t *fwTranspiler) emitFString(n *gotreesitter.Node) string {
 // guard cond else { return err } -> if !(cond) { return err }
 func (t *fwTranspiler) emitGuard(n *gotreesitter.Node) string {
 	cond := t.childByField(n, "condition")
-	if cond == nil {
+	body := t.childByField(n, "body")
+	if cond == nil || body == nil {
 		return t.text(n)
 	}
 
-	block := t.findBlock(n)
-	return fmt.Sprintf("if !(%s) %s", t.emit(cond), block)
+	bodyText := t.emit(body)
+	if t.nodeType(body) != "block" {
+		bodyText = "{\n\t" + bodyText + "\n}"
+	}
+	return fmt.Sprintf("if !(%s) %s", t.emit(cond), bodyText)
 }
 
 // defer! f.Close() -> defer func() { if _cerr := f.Close(); _cerr != nil && err == nil { err = _cerr } }()
@@ -752,608 +1211,4 @@ func (t *fwTranspiler) emitSwap(n *gotreesitter.Node) string {
 		return t.text(n)
 	}
 	return fmt.Sprintf("%s, %s = %s, %s", t.emit(a), t.emit(b), t.emit(b), t.emit(a))
-}
-
-// detectGenericTypes scans transpiled output for Result[T] and Option[T] usage.
-func (t *fwTranspiler) detectGenericTypes(code string) {
-	if strings.Contains(code, "Result[") || strings.Contains(code, "Ok[") || strings.Contains(code, "Err[") {
-		t.needsResultType = true
-	}
-	if strings.Contains(code, "Option[") || strings.Contains(code, "Some[") || strings.Contains(code, "None[") {
-		t.needsOptionType = true
-	}
-}
-
-const resultTypeDef = `
-// Result is a Rust-inspired Result type for explicit error handling.
-type Result[T any] struct {
-	val T
-	err error
-	ok  bool
-}
-
-func Ok[T any](v T) Result[T]    { return Result[T]{val: v, ok: true} }
-func Err[T any](e error) Result[T] { return Result[T]{err: e} }
-func (r Result[T]) Unwrap() T     { if !r.ok { panic(r.err) }; return r.val }
-func (r Result[T]) UnwrapOr(def T) T {
-	if !r.ok {
-		return def
-	}
-	return r.val
-}
-func (r Result[T]) IsOk() bool  { return r.ok }
-func (r Result[T]) IsErr() bool { return !r.ok }
-func (r Result[T]) Map(f func(T) T) Result[T] {
-	if r.ok {
-		return Ok[T](f(r.val))
-	}
-	return r
-}
-func (r Result[T]) AndThen(f func(T) Result[T]) Result[T] {
-	if r.ok {
-		return f(r.val)
-	}
-	return r
-}
-`
-
-const optionTypeDef = `
-// Option is a Rust-inspired Option type for explicit nil handling.
-type Option[T any] struct {
-	val  T
-	some bool
-}
-
-func Some[T any](v T) Option[T] { return Option[T]{val: v, some: true} }
-func None[T any]() Option[T]    { return Option[T]{} }
-func (o Option[T]) Unwrap() T   { if !o.some { panic("unwrap on None") }; return o.val }
-func (o Option[T]) UnwrapOr(def T) T {
-	if !o.some {
-		return def
-	}
-	return o.val
-}
-func (o Option[T]) IsSome() bool { return o.some }
-func (o Option[T]) IsNone() bool { return !o.some }
-func (o Option[T]) Map(f func(T) T) Option[T] {
-	if o.some {
-		return Some[T](f(o.val))
-	}
-	return o
-}
-func (o Option[T]) Filter(f func(T) bool) Option[T] {
-	if o.some && f(o.val) {
-		return o
-	}
-	return None[T]()
-}
-`
-
-// injectGenericTypes appends Result and Option type definitions at the end of
-// the file when the transpiled code references them.
-func (t *fwTranspiler) injectGenericTypes(code string) string {
-	if !t.needsResultType && !t.needsOptionType {
-		return code
-	}
-	var b strings.Builder
-	b.WriteString(code)
-	if t.needsResultType {
-		b.WriteString(resultTypeDef)
-	}
-	if t.needsOptionType {
-		b.WriteString(optionTypeDef)
-	}
-	return b.String()
-}
-
-// injectImports adds required imports (reflect, fmt) after transpilation.
-// It looks for an existing import block and appends missing imports, or inserts
-// a new import statement after the package clause if none exists.
-func (t *fwTranspiler) injectImports(code string) string {
-	var needed []string
-	if t.needsReflect && !strings.Contains(code, `"reflect"`) {
-		needed = append(needed, `"reflect"`)
-	}
-	if t.needsFmt && !strings.Contains(code, `"fmt"`) {
-		needed = append(needed, `"fmt"`)
-	}
-	if t.needsJSON && !strings.Contains(code, `"encoding/json"`) {
-		needed = append(needed, `"encoding/json"`)
-	}
-	if t.needsUnsafe && !strings.Contains(code, `"unsafe"`) {
-		needed = append(needed, `"unsafe"`)
-	}
-	if t.needsRuntime && !strings.Contains(code, `"runtime"`) {
-		needed = append(needed, `"runtime"`)
-	}
-	if t.needsOS && !strings.Contains(code, `"os"`) {
-		needed = append(needed, `"os"`)
-	}
-	if t.needsSyscall && !strings.Contains(code, `"syscall"`) {
-		needed = append(needed, `"syscall"`)
-	}
-	if t.needsSync && !strings.Contains(code, `"sync"`) {
-		needed = append(needed, `"sync"`)
-	}
-	if t.needsTime && !strings.Contains(code, `"time"`) {
-		needed = append(needed, `"time"`)
-	}
-	if len(needed) == 0 {
-		return code
-	}
-
-	// Try to find an existing import block: import ( ... )
-	if idx := strings.Index(code, "import ("); idx >= 0 {
-		// Insert after the opening paren
-		insertAt := idx + len("import (")
-		var inject strings.Builder
-		for _, imp := range needed {
-			inject.WriteString("\n\t")
-			inject.WriteString(imp)
-		}
-		return code[:insertAt] + inject.String() + code[insertAt:]
-	}
-
-	// Try to find a single import statement: import "pkg"
-	if idx := strings.Index(code, "import "); idx >= 0 {
-		// Find the end of this import line
-		endIdx := strings.Index(code[idx:], "\n")
-		if endIdx >= 0 {
-			endIdx += idx
-			var inject strings.Builder
-			for _, imp := range needed {
-				inject.WriteString("\nimport ")
-				inject.WriteString(imp)
-			}
-			return code[:endIdx] + inject.String() + code[endIdx:]
-		}
-	}
-
-	// No import at all — insert after package clause
-	if idx := strings.Index(code, "\n"); idx >= 0 {
-		var inject strings.Builder
-		inject.WriteString("\n\nimport (")
-		for _, imp := range needed {
-			inject.WriteString("\n\t")
-			inject.WriteString(imp)
-		}
-		inject.WriteString("\n)")
-		return code[:idx] + inject.String() + code[idx:]
-	}
-
-	return code
-}
-
-// =============================================
-// LOW-LEVEL MEMORY MANAGEMENT EMIT HANDLERS
-// =============================================
-
-// arena scratch { body } or arena scratch 1024*1024 { body }
-// -> bump allocator with make([]byte, 0, size)
-func (t *fwTranspiler) emitArena(n *gotreesitter.Node) string {
-	nameNode := t.childByField(n, "name")
-	if nameNode == nil {
-		return t.text(n)
-	}
-	name := t.text(nameNode)
-	t.needsUnsafe = true
-
-	sizeExpr := "1 << 20" // default 1MB
-	if sizeNode := t.childByField(n, "size"); sizeNode != nil {
-		sizeExpr = t.emit(sizeNode)
-	}
-
-	block := t.findBlock(n)
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "_arenaSize := %s\n", sizeExpr)
-	fmt.Fprintf(&b, "_arena_%s := make([]byte, 0, _arenaSize)\n", name)
-	fmt.Fprintf(&b, "_arenaAlloc_%s := func(size int) unsafe.Pointer {\n", name)
-	fmt.Fprintf(&b, "\toff := len(_arena_%s)\n", name)
-	fmt.Fprintf(&b, "\t_arena_%s = _arena_%s[:off+size]\n", name, name)
-	fmt.Fprintf(&b, "\treturn unsafe.Pointer(&_arena_%s[off])\n", name)
-	fmt.Fprintf(&b, "}\n")
-	fmt.Fprintf(&b, "_ = _arenaAlloc_%s\n", name)
-	fmt.Fprintf(&b, "defer func() { _arena_%s = nil }()\n", name)
-	b.WriteString(block)
-	return b.String()
-}
-
-// pin data -> runtime.KeepAlive + SetFinalizer(nil)
-func (t *fwTranspiler) emitPin(n *gotreesitter.Node) string {
-	nameNode := t.childByField(n, "name")
-	if nameNode == nil {
-		return t.text(n)
-	}
-	name := t.text(nameNode)
-	t.needsRuntime = true
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "_pin_%s := &%s\n", name, name)
-	fmt.Fprintf(&b, "runtime.SetFinalizer(_pin_%s, nil)\n", name)
-	fmt.Fprintf(&b, "defer runtime.KeepAlive(%s)", name)
-	return b.String()
-}
-
-// unpin data -> runtime.KeepAlive at this point
-func (t *fwTranspiler) emitUnpin(n *gotreesitter.Node) string {
-	nameNode := t.childByField(n, "name")
-	if nameNode == nil {
-		return t.text(n)
-	}
-	name := t.text(nameNode)
-	t.needsRuntime = true
-
-	return fmt.Sprintf("runtime.KeepAlive(%s)", name)
-}
-
-// unsafe cast(expr, TargetType) -> *(*TargetType)(unsafe.Pointer(&expr))
-func (t *fwTranspiler) emitUnsafeCast(n *gotreesitter.Node) string {
-	expr := t.childByField(n, "expr")
-	targetType := t.childByField(n, "target_type")
-	if expr == nil || targetType == nil {
-		return t.text(n)
-	}
-	t.needsUnsafe = true
-
-	return fmt.Sprintf("*(*%s)(unsafe.Pointer(&%s))", t.emit(targetType), t.emit(expr))
-}
-
-// mmap file "data.bin" as data []byte { body }
-func (t *fwTranspiler) emitMmap(n *gotreesitter.Node) string {
-	pathNode := t.childByField(n, "path")
-	nameNode := t.childByField(n, "name")
-	if pathNode == nil || nameNode == nil {
-		return t.text(n)
-	}
-	t.needsOS = true
-	t.needsSyscall = true
-
-	pathStr := t.text(pathNode)
-	name := t.text(nameNode)
-	block := t.findBlock(n)
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "_f, _ := os.Open(%s)\n", pathStr)
-	b.WriteString("defer _f.Close()\n")
-	b.WriteString("_fi, _ := _f.Stat()\n")
-	fmt.Fprintf(&b, "%s, _ := syscall.Mmap(int(_f.Fd()), 0, int(_fi.Size()), syscall.PROT_READ, syscall.MAP_SHARED)\n", name)
-	fmt.Fprintf(&b, "defer syscall.Munmap(%s)\n", name)
-	b.WriteString(block)
-	return b.String()
-}
-
-// packed struct Foo { ... } -> pass through with alignment comment
-func (t *fwTranspiler) emitPacked(n *gotreesitter.Node) string {
-	decl := t.childByField(n, "decl")
-	if decl == nil {
-		return t.text(n)
-	}
-	return "// packed: manual alignment required\n" + t.emit(decl)
-}
-
-// vectorize for v in items { body } -> for loop with vectorize hint comment
-func (t *fwTranspiler) emitVectorize(n *gotreesitter.Node) string {
-	varNode := t.childByField(n, "var")
-	rangeNode := t.childByField(n, "range")
-	if varNode == nil || rangeNode == nil {
-		return t.text(n)
-	}
-
-	varName := t.text(varNode)
-	block := t.findBlock(n)
-
-	// Check if range is a range_expression (0..N)
-	if t.nodeType(rangeNode) == "range_expression" {
-		start := t.childByField(rangeNode, "start")
-		end := t.childByField(rangeNode, "end")
-		if start != nil && end != nil {
-			return fmt.Sprintf("// vectorize: compiler hint\nfor %s := %s; %s < %s; %s++ %s",
-				varName, t.emit(start), varName, t.emit(end), varName, block)
-		}
-	}
-
-	return fmt.Sprintf("// vectorize: compiler hint\nfor _, %s := range %s %s", varName, t.emit(rangeNode), block)
-}
-
-// =============================================
-// CONCURRENCY EMIT HANDLERS
-// =============================================
-
-// select! { arm, arm, ... } -> Go select statement
-func (t *fwTranspiler) emitSelectBlock(n *gotreesitter.Node) string {
-	var b strings.Builder
-	b.WriteString("select {\n")
-
-	for i := 0; i < int(n.NamedChildCount()); i++ {
-		c := n.NamedChild(i)
-		if t.nodeType(c) != "select_arm" {
-			continue
-		}
-
-		// Check which kind of arm: var from chan, timeout duration, or default
-		varNode := t.childByField(c, "var")
-		chanNode := t.childByField(c, "chan")
-		durNode := t.childByField(c, "duration")
-		bodyNode := t.childByField(c, "body")
-
-		if bodyNode == nil {
-			continue
-		}
-
-		if varNode != nil && chanNode != nil {
-			// var from chan => body
-			fmt.Fprintf(&b, "case %s := <-%s:\n\t%s\n",
-				t.text(varNode), t.emit(chanNode), t.emit(bodyNode))
-		} else if durNode != nil {
-			// timeout duration => body
-			t.needsTime = true
-			fmt.Fprintf(&b, "case <-time.After(%s):\n\t%s\n",
-				t.emit(durNode), t.emit(bodyNode))
-		} else {
-			// default => body
-			fmt.Fprintf(&b, "default:\n\t%s\n", t.emit(bodyNode))
-		}
-	}
-
-	b.WriteString("}")
-	return b.String()
-}
-
-// fan out workers, 10 { body } -> WaitGroup + goroutines
-func (t *fwTranspiler) emitFanOut(n *gotreesitter.Node) string {
-	nameNode := t.childByField(n, "name")
-	countNode := t.childByField(n, "count")
-	if nameNode == nil || countNode == nil {
-		return t.text(n)
-	}
-	t.needsSync = true
-
-	block := t.findBlock(n)
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "var _wg_%s sync.WaitGroup\n", t.text(nameNode))
-	fmt.Fprintf(&b, "for _wi := 0; _wi < %s; _wi++ {\n", t.emit(countNode))
-	fmt.Fprintf(&b, "\t_wg_%s.Add(1)\n", t.text(nameNode))
-	b.WriteString("\tgo func() {\n")
-	fmt.Fprintf(&b, "\t\tdefer _wg_%s.Done()\n", t.text(nameNode))
-	fmt.Fprintf(&b, "\t\t%s\n", block)
-	b.WriteString("\t}()\n")
-	b.WriteString("}\n")
-	fmt.Fprintf(&b, "_wg_%s.Wait()", t.text(nameNode))
-	return b.String()
-}
-
-// fan in [ch1, ch2, ch3] -> merge channels IIFE
-func (t *fwTranspiler) emitFanIn(n *gotreesitter.Node) string {
-	t.needsSync = true
-
-	// Collect all channel expressions
-	var channels []string
-	for i := 0; i < int(n.NamedChildCount()); i++ {
-		c := n.NamedChild(i)
-		if t.nodeType(c) != "comment" {
-			channels = append(channels, t.emit(c))
-		}
-	}
-	if len(channels) == 0 {
-		return t.text(n)
-	}
-
-	var b strings.Builder
-	b.WriteString("func() <-chan interface{} {\n")
-	b.WriteString("\tout := make(chan interface{})\n")
-	b.WriteString("\tvar wg sync.WaitGroup\n")
-	fmt.Fprintf(&b, "\tfor _, _ch := range []<-chan interface{}{%s} {\n", strings.Join(channels, ", "))
-	b.WriteString("\t\twg.Add(1)\n")
-	b.WriteString("\t\tgo func(c <-chan interface{}) {\n")
-	b.WriteString("\t\t\tdefer wg.Done()\n")
-	b.WriteString("\t\t\tfor v := range c { out <- v }\n")
-	b.WriteString("\t\t}(_ch)\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\tgo func() { wg.Wait(); close(out) }()\n")
-	b.WriteString("\treturn out\n")
-	b.WriteString("}()")
-	return b.String()
-}
-
-// left |> right -> right(left)
-func (t *fwTranspiler) emitPipeline(n *gotreesitter.Node) string {
-	left := t.childByField(n, "left")
-	right := t.childByField(n, "right")
-	if left == nil || right == nil {
-		return t.text(n)
-	}
-	// Simple case: `data |> transform` → `transform(data)`
-	return fmt.Sprintf("%s(%s)", t.emit(right), t.emit(left))
-}
-
-func (t *fwTranspiler) emitSelectorExpression(n *gotreesitter.Node) string {
-	if n.ChildCount() < 3 {
-		return t.emitDefault(n)
-	}
-	obj := n.Child(0)
-	field := n.Child(2) // skip the "." at index 1
-
-	// `x |> fmt.Sprint` parses as selector(pipeline(x, fmt), Sprint).
-	// Reconstruct as `fmt.Sprint(x)`.
-	if t.nodeType(obj) == "pipeline_expression" {
-		pipeLeft := t.childByField(obj, "left")
-		pipeRight := t.childByField(obj, "right")
-		if pipeLeft != nil && pipeRight != nil {
-			pipeVal := t.emit(pipeLeft)
-			pkg := t.emit(pipeRight)
-			fieldText := t.text(field)
-			return fmt.Sprintf("%s.%s(%s)", pkg, fieldText, pipeVal)
-		}
-	}
-
-	return t.emitDefault(n)
-}
-
-// concurrent { stmt1; stmt2 } -> WaitGroup wrapping each statement
-func (t *fwTranspiler) emitConcurrent(n *gotreesitter.Node) string {
-	t.needsSync = true
-
-	// Find the block, then find the statement_list inside it
-	var stmtListNode *gotreesitter.Node
-	for i := 0; i < int(n.NamedChildCount()); i++ {
-		c := n.NamedChild(i)
-		if t.nodeType(c) == "block" {
-			// Inside a block, look for statement_list
-			for j := 0; j < int(c.NamedChildCount()); j++ {
-				sc := c.NamedChild(j)
-				if t.nodeType(sc) == "statement_list" {
-					stmtListNode = sc
-					break
-				}
-			}
-			if stmtListNode == nil {
-				stmtListNode = c // fallback to block itself
-			}
-			break
-		}
-	}
-	if stmtListNode == nil {
-		return t.text(n)
-	}
-
-	// Collect all statement children
-	var stmts []string
-	for i := 0; i < int(stmtListNode.NamedChildCount()); i++ {
-		c := stmtListNode.NamedChild(i)
-		stmts = append(stmts, t.emit(c))
-	}
-	if len(stmts) == 0 {
-		return "// concurrent: empty block"
-	}
-
-	var b strings.Builder
-	b.WriteString("var _wg sync.WaitGroup\n")
-	fmt.Fprintf(&b, "_wg.Add(%d)\n", len(stmts))
-	for _, stmt := range stmts {
-		fmt.Fprintf(&b, "go func() {\n\tdefer _wg.Done()\n\t%s\n}()\n", stmt)
-	}
-	b.WriteString("_wg.Wait()")
-	return b.String()
-}
-
-// throttle 100 { body } -> time.Ticker rate limiting
-func (t *fwTranspiler) emitThrottle(n *gotreesitter.Node) string {
-	rateNode := t.childByField(n, "rate")
-	if rateNode == nil {
-		return t.text(n)
-	}
-	t.needsTime = true
-
-	block := t.findBlock(n)
-
-	// Configurable: throttle 100 burst 10 { }
-	// Default burst: 1 (no burst)
-	burst := ""
-	if b := t.childByField(n, "burst"); b != nil {
-		burst = t.emit(b)
-	}
-
-	rate := t.emit(rateNode)
-	var b strings.Builder
-	if burst != "" {
-		fmt.Fprintf(&b, "// throttle: %s/s, burst: %s\n", rate, burst)
-		fmt.Fprintf(&b, "_throttleBurst := %s\n", burst)
-		fmt.Fprintf(&b, "_ = _throttleBurst\n")
-	} else {
-		fmt.Fprintf(&b, "// throttle: %s/s\n", rate)
-	}
-	fmt.Fprintf(&b, "_ticker := time.NewTicker(time.Second / time.Duration(%s))\n", rate)
-	b.WriteString("defer _ticker.Stop()\n")
-	b.WriteString("<-_ticker.C\n")
-	b.WriteString(block)
-	return b.String()
-}
-
-// retry 3 { body } -> retry loop with exponential backoff
-func (t *fwTranspiler) emitRetry(n *gotreesitter.Node) string {
-	countNode := t.childByField(n, "count")
-	if countNode == nil {
-		return t.text(n)
-	}
-	t.needsTime = true
-
-	block := t.findBlock(n)
-
-	// Configurable: retry 5 delay 500 backoff 2 { }
-	// Defaults: 100ms initial delay, 2x exponential backoff
-	delay := "100"
-	backoff := "2"
-	if d := t.childByField(n, "delay"); d != nil {
-		delay = t.emit(d)
-	}
-	if b := t.childByField(n, "backoff"); b != nil {
-		backoff = t.emit(b)
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "// retry %s times (delay: %sms, backoff: %sx)\n", t.emit(countNode), delay, backoff)
-	b.WriteString("var _retryErr error\n")
-	fmt.Fprintf(&b, "_retryDelay := time.Duration(%s) * time.Millisecond\n", delay)
-	fmt.Fprintf(&b, "for _attempt := 0; _attempt < %s; _attempt++ {\n", t.emit(countNode))
-	fmt.Fprintf(&b, "\t_retryErr = func() error {\n\t\t%s\n\t\treturn nil\n\t}()\n", block)
-	b.WriteString("\tif _retryErr == nil { break }\n")
-	b.WriteString("\ttime.Sleep(_retryDelay)\n")
-	fmt.Fprintf(&b, "\t_retryDelay = time.Duration(float64(_retryDelay) * %s)\n", backoff)
-	b.WriteString("}\n")
-	b.WriteString("_ = _retryErr")
-	return b.String()
-}
-
-// breaker "service" { body } -> circuit breaker logic
-func (t *fwTranspiler) emitBreaker(n *gotreesitter.Node) string {
-	nameNode := t.childByField(n, "name")
-	if nameNode == nil {
-		return t.text(n)
-	}
-	t.needsTime = true
-	t.needsSync = true
-
-	nameStr := t.text(nameNode)
-	varName := strings.Trim(nameStr, `"`)
-	varName = strings.NewReplacer("-", "_", " ", "_").Replace(varName)
-	block := t.findBlock(n)
-
-	// Configurable: breaker "name" threshold 10 cooldown 60 { }
-	// Defaults: 5 failures, 30 seconds cooldown
-	threshold := "5"
-	cooldown := "30"
-	if th := t.childByField(n, "threshold"); th != nil {
-		threshold = t.emit(th)
-	}
-	if cd := t.childByField(n, "cooldown"); cd != nil {
-		cooldown = t.emit(cd)
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "// Circuit breaker %s (threshold: %s failures, cooldown: %ss)\n", nameStr, threshold, cooldown)
-	fmt.Fprintf(&b, "var _breaker_%s_mu sync.Mutex\n", varName)
-	fmt.Fprintf(&b, "var _breaker_%s_failures int\n", varName)
-	fmt.Fprintf(&b, "var _breaker_%s_lastFail time.Time\n", varName)
-	fmt.Fprintf(&b, "_breaker_%s_mu.Lock()\n", varName)
-	fmt.Fprintf(&b, "_breaker_%s_open := _breaker_%s_failures >= %s && time.Since(_breaker_%s_lastFail) < %s*time.Second\n",
-		varName, varName, threshold, varName, cooldown)
-	fmt.Fprintf(&b, "_breaker_%s_mu.Unlock()\n", varName)
-	fmt.Fprintf(&b, "if !_breaker_%s_open {\n", varName)
-	fmt.Fprintf(&b, "\tfunc() {\n")
-	fmt.Fprintf(&b, "\t\tdefer func() {\n")
-	fmt.Fprintf(&b, "\t\t\t_breaker_%s_mu.Lock()\n", varName)
-	fmt.Fprintf(&b, "\t\t\tdefer _breaker_%s_mu.Unlock()\n", varName)
-	fmt.Fprintf(&b, "\t\t\tif r := recover(); r != nil {\n")
-	fmt.Fprintf(&b, "\t\t\t\t_breaker_%s_failures++\n", varName)
-	fmt.Fprintf(&b, "\t\t\t\t_breaker_%s_lastFail = time.Now()\n", varName)
-	fmt.Fprintf(&b, "\t\t\t} else {\n")
-	fmt.Fprintf(&b, "\t\t\t\t_breaker_%s_failures = 0\n", varName)
-	fmt.Fprintf(&b, "\t\t\t}\n")
-	fmt.Fprintf(&b, "\t\t}()\n")
-	fmt.Fprintf(&b, "\t\t%s\n", block)
-	fmt.Fprintf(&b, "\t}()\n")
-	fmt.Fprintf(&b, "}")
-	return b.String()
 }

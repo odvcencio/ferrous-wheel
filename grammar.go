@@ -8,7 +8,7 @@ package ferrouswheel
 //	enum Color { Red, Green, Blue(int) }       -> struct + const + constructors
 //	match color { Red => ..., Blue(n) => ... } -> switch
 //	match x { n if n > 0 => "pos" }           -> switch with guard clauses
-//	val := try doSomething()                   -> if err != nil { return ..., err }
+//	let val = try doSomething()                -> bind values, propagate trailing error
 //	obj?.field                                 -> nil check + field access
 //	val ?? default                             -> if val != nil { ... } else { default }
 //	let x = 1                                  -> x := 1
@@ -30,18 +30,11 @@ package ferrouswheel
 //	swap(a, b)                                 -> tuple swap
 func Grammar() *GrammarType {
 	return ExtendGrammar("ferrous_wheel", GoGrammar(), func(g *GrammarType) {
-
-		// Mark ferrous-wheel keywords as non-keyword strings so the keyword DFA
-		// doesn't promote them unconditionally (they coexist as identifiers
-		// in Go code).
-		if g.NonKeywordStrings == nil {
-			g.NonKeywordStrings = make(map[string]bool)
+		appendChoices := func(name string, rules ...*Rule) {
+			for _, rule := range rules {
+				AppendChoice(g, name, rule)
+			}
 		}
-		g.NonKeywordStrings["enum"] = true
-		g.NonKeywordStrings["match"] = true
-		g.NonKeywordStrings["let"] = true
-		g.NonKeywordStrings["fn"] = true
-		g.NonKeywordStrings["try"] = true
 
 		// --- enum declaration ---
 		// enum Color { Red, Green, Blue(int) }
@@ -125,7 +118,8 @@ func Grammar() *GrammarType {
 
 		// --- error propagation: try expr ---
 		// Uses try prefix instead of ? suffix to avoid DFA conflict with ??
-		// try doSomething()  ->  if err != nil { return ..., err }
+		// Lowering happens at supported assignment sites, e.g.
+		//   let val = try doSomething()
 		g.Define("error_propagation", PrecDynamic(-1,
 			Seq(
 				Str("try"),
@@ -461,13 +455,13 @@ func Grammar() *GrammarType {
 		))
 
 		// Wire into grammar
-		AppendChoice(g, "_top_level_declaration",
+		appendChoices("_top_level_declaration",
 			Sym("enum_declaration"),
 			Sym("derive_declaration"),
 			Sym("impl_block"),
 		)
 
-		AppendChoice(g, "_expression",
+		appendChoices("_expression",
 			Sym("match_expression"),
 			Sym("null_coalesce"),
 			Sym("safe_navigation"),
@@ -484,7 +478,7 @@ func Grammar() *GrammarType {
 			Sym("pipeline_expression"),
 		)
 
-		AppendChoice(g, "_statement",
+		appendChoices("_statement",
 			Sym("let_declaration"),
 			Sym("let_multi_declaration"),
 			Sym("enum_declaration"),
@@ -515,38 +509,6 @@ func Grammar() *GrammarType {
 			Sym("retry_block"),
 			Sym("breaker_block"),
 		)
-
-		// Mark new keywords as non-keyword strings
-		g.NonKeywordStrings["if"] = true // used in match guards, also Go keyword
-		// New feature keywords that coexist as identifiers in Go code
-		g.NonKeywordStrings["derive"] = true
-		g.NonKeywordStrings["in"] = true
-		g.NonKeywordStrings["guard"] = true
-		g.NonKeywordStrings["impl"] = true
-		g.NonKeywordStrings["unless"] = true
-		g.NonKeywordStrings["until"] = true
-		g.NonKeywordStrings["repeat"] = true
-		g.NonKeywordStrings["swap"] = true
-		// Low-level keywords
-		g.NonKeywordStrings["arena"] = true
-		g.NonKeywordStrings["pin"] = true
-		g.NonKeywordStrings["unpin"] = true
-		// Note: "unsafe" is already a Go keyword
-		g.NonKeywordStrings["mmap"] = true
-		g.NonKeywordStrings["packed"] = true
-		g.NonKeywordStrings["vectorize"] = true
-		// Concurrency keywords
-		// Note: "select" is already a Go keyword; "select!" is a new token
-		g.NonKeywordStrings["fan"] = true
-		g.NonKeywordStrings["out"] = true
-		g.NonKeywordStrings["from"] = true
-		g.NonKeywordStrings["timeout"] = true
-		g.NonKeywordStrings["concurrent"] = true
-		g.NonKeywordStrings["throttle"] = true
-		g.NonKeywordStrings["retry"] = true
-		g.NonKeywordStrings["breaker"] = true
-		// Note: "for" is NOT added — it's already a Go keyword and should be promoted
-		// Note: "f" is NOT added — fstring uses a Token(Pat(...)) so no keyword conflict
 
 		// GLR conflicts for keyword ambiguities
 		AddConflict(g, "_statement", "let_declaration")

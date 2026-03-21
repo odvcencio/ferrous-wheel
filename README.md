@@ -48,9 +48,10 @@ go install github.com/odvcencio/ferrous-wheel/cmd/ferrous-wheel@latest
 ## Usage
 
 ```bash
-ferrous-wheel build myfile.fw    # transpile to Go
-ferrous-wheel run myfile.fw      # transpile + execute
-go run myfile_generated.go       # or run the output directly
+ferrous-wheel emit myfile.fw > myfile_generated.go  # transpile to Go
+ferrous-wheel run myfile.fw                         # transpile + execute
+ferrous-wheel build myfile.fw -o myapp             # compile a native binary
+go run myfile_generated.go                         # or run the emitted Go directly
 ```
 
 ---
@@ -149,14 +150,14 @@ func classify(n int) string {
 }
 ```
 
-### If-let — pattern destructuring
+### If-let — conditional binding
 
 ```fw
-func process(color Color) {
-    if let Blue(intensity) = color {
-        fmt.Println(f"Blue with intensity {intensity}")
+func process(user *User) {
+    if let u = user {
+        fmt.Println(f"Hello, {u.Name}")
     } else {
-        fmt.Println("Not blue")
+        fmt.Println("No user")
     }
 }
 ```
@@ -218,10 +219,14 @@ let status = connected ? (healthy ? "ok" : "degraded") : "offline"
 ### Error propagation
 
 ```fw
-let file = try os.Open("data.txt")
-let data = try io.ReadAll(file)
-let config = try json.Unmarshal(data)
+func readData(path string) ([]byte, error) {
+    let file = try os.Open(path)
+    let data = try io.ReadAll(file)
+    return data, nil
+}
 ```
+
+`try` is currently supported on the right-hand side of `let`, tuple `let`, `:=`, and `=` inside callables that return a trailing `error`. Inside `retry`, the propagated error feeds the retry loop instead of returning from the outer function.
 
 ### List comprehensions
 
@@ -309,7 +314,9 @@ func writeFile(path string, data []byte) (err error) {
     let f = try os.Create(path)
     defer! f.Close()    // if Close() fails, err captures it
 
-    try f.Write(data)
+    written, writeErr := f.Write(data)
+    _ = written
+    guard writeErr == nil else return writeErr
     return nil
 }
 ```
@@ -318,43 +325,46 @@ func writeFile(path string, data []byte) (err error) {
 
 ## Low-level memory
 
-### Arena allocation — bypass the GC
+### Arena allocation — manual bump allocator helpers
 
 ```fw
 arena scratch {
-    // Everything allocated here lives on a single []byte slab.
-    // GC never scans it. Freed all at once when the block exits.
-    let buf = make([]byte, 4096)
-    processInPlace(buf)
+    // Emits `_arenaAlloc_scratch(size)` backed by a reusable byte slab.
+    // Ordinary Go allocations still behave normally unless you call the helper.
+    let ptr = _arenaAlloc_scratch(4096)
+    let buf = unsafe cast(ptr, *[4096]byte)
+    processInPlace(buf[:])
 }
 
 arena bigPool 16 * 1024 * 1024 {
-    // 16MB arena for bulk processing
-    let nodes = buildTree(data)
-    let result = traverse(nodes)
+    let nodePtr = _arenaAlloc_bigPool(int(unsafe.Sizeof(Node{})))
+    let node = unsafe cast(nodePtr, *Node)
+    node.Value = 42
 }
 ```
 
-### Pin / Unpin — control GC lifetime
+### Pin / Unpin — experimental liveness hints
 
 ```fw
 let data = loadLargeDataset()
-pin data       // GC won't collect or move this
+pin data       // emit a runtime liveness barrier for the surrounding function
 
-// ... hot path using data, no GC pauses ...
+// ... hot path using data ...
 
-unpin data     // GC can reclaim when ready
+unpin data     // emit an immediate KeepAlive barrier at this point
 ```
 
-### Unsafe cast — zero-copy type punning
+### Unsafe cast — raw reinterpretation of fixed-size values and byte slices
 
 ```fw
-// String to []byte without allocation
-let bytes = unsafe cast(str, []byte)
+// Reinterpret a float64 as its IEEE-754 bits
+let bits = unsafe cast(value, uint64)
 
-// Reinterpret raw memory as a struct
-let header = unsafe cast(rawBytes[0:12], PacketHeader)
+// Copy raw bytes into a struct-shaped value
+let header = unsafe cast(headerBytes, PacketHeader)
 ```
+
+When the source is `[]byte`, `unsafe cast` copies the leading bytes into the destination value. For non-slice values of equal size, it reinterprets the in-memory representation directly.
 
 ### Memory-mapped I/O
 
@@ -369,7 +379,7 @@ mmap file "database.bin" as data []byte {
 // File automatically unmapped and closed here.
 ```
 
-### Packed structs and vectorize hints
+### Packed annotations and vectorize hints
 
 ```fw
 packed struct NetworkPacket {
@@ -384,6 +394,8 @@ vectorize for i in 0..len(data) {
     result[i] = data[i] * scale + offset
 }
 ```
+
+`packed` currently emits a layout warning comment rather than changing Go's field alignment rules.
 
 ---
 
@@ -426,12 +438,16 @@ for event in merged {
 ### Structured concurrency
 
 ```fw
+var users []User
+var orders []Order
+var inventory []Inventory
+
 concurrent {
-    let users = fetchUsers()
-    let orders = fetchOrders()
-    let inventory = fetchInventory()
+    users = fetchUsers()
+    orders = fetchOrders()
+    inventory = fetchInventory()
 }
-// All three complete. Results available here.
+// All three assignments complete here.
 let report = buildReport(users, orders, inventory)
 ```
 
@@ -448,8 +464,8 @@ let processed = rawStream
 ### Throttle — rate limiting
 
 ```fw
-throttle 1000 {
-    for req in requests {
+for req in requests {
+    throttle 1000 {
         handle(req)
     }
 }
@@ -459,7 +475,8 @@ throttle 1000 {
 
 ```fw
 retry 5 {
-    let resp = http.Get("https://flaky-api.com/data")
+    let (resp, err) = http.Get("https://flaky-api.com/data")
+    guard err == nil else return err
     guard resp.StatusCode == 200 else return errors.New(f"status {resp.StatusCode}")
 }
 ```
@@ -468,8 +485,7 @@ retry 5 {
 
 ```fw
 breaker "payment-gateway" {
-    let charge = paymentClient.Charge(amount)
-    guard charge.Success else return charge.Error
+    mustCharge(amount)   // panic on failure
 }
 // After 5 failures, the breaker opens for 30s.
 // Requests during cooldown skip the body entirely.
@@ -499,7 +515,7 @@ func scrape(urls []string) []Page {
 }
 ```
 
-### Zero-copy binary parser
+### Binary parser
 
 ```fw
 func parseFrame(raw []byte) Frame {
@@ -522,15 +538,17 @@ func parseFrame(raw []byte) Frame {
 func handleOrder(ctx context.Context, order Order) (err error) {
     guard order.Valid() else return errors.New("invalid order")
 
-    let user = retry 3 {
-        breaker "user-service" {
-            try userClient.Get(ctx, order.UserID)
-        }
+    var user User
+    retry 3 {
+        user, err = userClient.Get(ctx, order.UserID)
+        guard err == nil else return err
     }
 
+    var inventory Reservation
+    var payment Payment
     concurrent {
-        let inventory = inventoryClient.Reserve(order.Items)
-        let payment = paymentClient.Authorize(order.Total)
+        inventory = inventoryClient.Reserve(order.Items)
+        payment = paymentClient.Authorize(order.Total)
     }
 
     guard inventory.OK else return errors.New(f"stock: {inventory.Error}")
@@ -538,6 +556,10 @@ func handleOrder(ctx context.Context, order Order) (err error) {
 
     throttle 100 {
         analytics.Track(f"order:{order.ID}", user.ID)
+    }
+
+    breaker "audit-log" {
+        mustAudit(order.ID)
     }
 
     return nil
@@ -549,18 +571,16 @@ func handleOrder(ctx context.Context, order Order) (err error) {
 ```fw
 func processCSV(path string) []Record {
     mmap file path as data []byte {
-        arena pool 64 * 1024 * 1024 {
-            let lines = split(data, '\n')
-            let records = [parseLine(l) for l in lines if len(l) > 0]
+        let lines = split(data, '\n')
+        let records = [parseLine(l) for l in lines if len(l) > 0]
 
-            fan out workers, runtime.NumCPU() {
-                vectorize for i in 0..len(records) {
-                    records[i].Score = computeScore(records[i])
-                }
+        fan out workers, runtime.NumCPU() {
+            vectorize for i in 0..len(records) {
+                records[i].Score = computeScore(records[i])
             }
-
-            return records
         }
+
+        return records
     }
 }
 ```
@@ -572,17 +592,17 @@ func processCSV(path string) []Record {
 - All output is standard Go. No runtime library, no hidden dependencies.
 - `??` uses `reflect.ValueOf` zero-value checks — works with all types.
 - `match` is exhaustive at runtime — unmatched values panic.
-- `?.` uses reflection for field access on interface values.
-- `arena` generates a real bump allocator using `unsafe.Pointer` — objects bypass GC.
-- Concurrency primitives compile to idiomatic Go patterns (`sync.WaitGroup`, `select`, channels).
-- Ferrous Wheel keywords are reserved in `.fw` files, like Rust reserves `fn`, `let`, `match`.
+- `?.` uses reflection for field access on pointer, interface, and struct values.
+- `arena` generates bump-allocation helpers; ordinary allocations are unaffected unless you call those helpers directly.
+- Concurrency primitives compile to Go patterns such as `sync.WaitGroup`, `select`, helper functions, and channels, with validation for unsupported block shapes.
+- Ferrous Wheel feature keywords are parsed contextually inside `.fw` files.
 - Auto-injected imports: `fmt`, `reflect`, `unsafe`, `runtime`, `os`, `syscall`, `sync`, `time` — only when the corresponding feature is used.
 
 ## How it works
 
 Ferrous Wheel extends Go's grammar using gotreesitter's `grammargen.ExtendGrammar`. The extended grammar adds ~80 rules on top of Go's 116 rules. A tree-sitter parser (pure Go, no CGO) parses `.fw` files into a concrete syntax tree, then a transpiler walks the tree and emits standard Go.
 
-103 tests verify grammar parsing and transpiler output, including end-to-end compile-and-run tests.
+The suite includes parser tests, transpiler tests, end-to-end compile/run checks, fuzzing, and race detection.
 
 The same architecture powers any grammar extension — see [danmuji](https://github.com/odvcencio/danmuji) for a BDD testing DSL built the same way.
 

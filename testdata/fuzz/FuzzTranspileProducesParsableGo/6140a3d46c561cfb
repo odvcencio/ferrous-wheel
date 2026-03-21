@@ -1,0 +1,2 @@
+go test fuzz v1
+string("package mx n\n\nfunc main() {\n\tlet ai= 1\n\t_ = x\n}\n")
