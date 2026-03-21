@@ -1,18 +1,131 @@
 package ferrouswheel
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"strconv"
 	"strings"
 )
 
+var (
+	resultHelperNames = []string{"Result", "Ok", "Err"}
+	optionHelperNames = []string{"Option", "Some", "None"}
+)
+
+type genericSupportUsage struct {
+	usesResult bool
+	usesOption bool
+	declared   map[string]struct{}
+}
+
+func (u genericSupportUsage) declaresAny(names ...string) bool {
+	for _, name := range names {
+		if _, ok := u.declared[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackGenericSupportUsage(code string) genericSupportUsage {
+	return genericSupportUsage{
+		usesResult: strings.Contains(code, "Result[") ||
+			strings.Contains(code, "Ok[") ||
+			strings.Contains(code, "Err[") ||
+			strings.Contains(code, "Ok(") ||
+			strings.Contains(code, "Err("),
+		usesOption: strings.Contains(code, "Option[") ||
+			strings.Contains(code, "Some[") ||
+			strings.Contains(code, "None[") ||
+			strings.Contains(code, "Some(") ||
+			strings.Contains(code, "None("),
+		declared: make(map[string]struct{}),
+	}
+}
+
+func helperFamilyFromName(name string) (result bool, option bool) {
+	switch name {
+	case "Result", "Ok", "Err":
+		return true, false
+	case "Option", "Some", "None":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func recordTopLevelDeclNames(decl ast.Decl, declared map[string]struct{}) {
+	switch d := decl.(type) {
+	case *ast.FuncDecl:
+		if d.Name != nil {
+			declared[d.Name.Name] = struct{}{}
+		}
+	case *ast.GenDecl:
+		for _, spec := range d.Specs {
+			switch s := spec.(type) {
+			case *ast.TypeSpec:
+				if s.Name != nil {
+					declared[s.Name.Name] = struct{}{}
+				}
+			case *ast.ValueSpec:
+				for _, name := range s.Names {
+					declared[name.Name] = struct{}{}
+				}
+			}
+		}
+	}
+}
+
+func markGenericSupportUsage(expr ast.Expr, usage *genericSupportUsage) {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		result, option := helperFamilyFromName(e.Name)
+		usage.usesResult = usage.usesResult || result
+		usage.usesOption = usage.usesOption || option
+	case *ast.IndexExpr:
+		markGenericSupportUsage(e.X, usage)
+	case *ast.IndexListExpr:
+		markGenericSupportUsage(e.X, usage)
+	}
+}
+
+func analyzeGenericSupportUsage(code string) genericSupportUsage {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "generated.go", code, 0)
+	if err != nil {
+		return fallbackGenericSupportUsage(code)
+	}
+
+	usage := genericSupportUsage{
+		declared: make(map[string]struct{}),
+	}
+	for _, decl := range file.Decls {
+		recordTopLevelDeclNames(decl, usage.declared)
+	}
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.CallExpr:
+			markGenericSupportUsage(node.Fun, &usage)
+		case *ast.IndexExpr:
+			markGenericSupportUsage(node, &usage)
+		case *ast.IndexListExpr:
+			markGenericSupportUsage(node, &usage)
+		}
+		return true
+	})
+
+	return usage
+}
+
 // detectGenericTypes scans transpiled output for Result[T] and Option[T] usage.
 func (t *fwTranspiler) detectGenericTypes(code string) {
-	if strings.Contains(code, "Result[") || strings.Contains(code, "Ok[") || strings.Contains(code, "Err[") {
+	usage := analyzeGenericSupportUsage(code)
+	if usage.usesResult && !usage.declaresAny(resultHelperNames...) {
 		t.needsResultType = true
 	}
-	if strings.Contains(code, "Option[") || strings.Contains(code, "Some[") || strings.Contains(code, "None[") {
+	if usage.usesOption && !usage.declaresAny(optionHelperNames...) {
 		t.needsOptionType = true
 	}
 }

@@ -168,6 +168,27 @@ func main() {
 	}
 }
 
+func TestStressRunGenericEnum(t *testing.T) {
+	got := runCheck(t, `package main
+
+import "fmt"
+
+enum Option[T any] {
+	Some(T),
+	None,
+}
+
+func main() {
+	some := Some(7)
+	none := None[int]()
+	fmt.Println(some.tag, some.some0, none.tag)
+}
+`)
+	if got != "0 7 1" {
+		t.Errorf("expected generic enum output, got %q", got)
+	}
+}
+
 func TestStressRunForInRange(t *testing.T) {
 	got := runCheck(t, `package main
 
@@ -447,6 +468,21 @@ func main() {
 	}
 }
 
+func TestStressRunResultTypeWithInference(t *testing.T) {
+	got := runCheck(t, `package main
+
+import "fmt"
+
+func main() {
+	r := Ok(7)
+	fmt.Println(r.Unwrap())
+}
+`)
+	if got != "7" {
+		t.Errorf("unexpected inferred Result output: %q", got)
+	}
+}
+
 func TestStressRunOptionType(t *testing.T) {
 	got := runCheck(t, `package main
 
@@ -469,6 +505,21 @@ func main() {
 	lines := strings.Split(got, "\n")
 	if len(lines) < 2 || lines[0] != "true alice" || lines[1] != "true unknown" {
 		t.Errorf("unexpected Option output:\n%s", got)
+	}
+}
+
+func TestStressRunOptionTypeWithInference(t *testing.T) {
+	got := runCheck(t, `package main
+
+import "fmt"
+
+func main() {
+	o := Some("alice")
+	fmt.Println(o.Unwrap())
+}
+`)
+	if got != "alice" {
+		t.Errorf("unexpected inferred Option output: %q", got)
 	}
 }
 
@@ -1760,6 +1811,62 @@ func main() {
 `)
 	if got != "api 8080" {
 		t.Errorf("expected JSON round trip to preserve fields, got %q", got)
+	}
+}
+
+func TestStressRunGenericDeriveJSONRoundTrip(t *testing.T) {
+	got := runCheck(t, `package main
+
+import "fmt"
+
+type Box[T any] struct {
+	Value T
+}
+
+derive JSON for Box[T]
+
+func main() {
+	box := Box[int]{Value: 7}
+	data, err := box.MarshalJSON()
+	if err != nil {
+		panic(err)
+	}
+	var decoded Box[int]
+	if err := decoded.UnmarshalJSON(data); err != nil {
+		panic(err)
+	}
+	fmt.Println(decoded.Value)
+}
+`)
+	if got != "7" {
+		t.Errorf("expected generic JSON round trip to preserve value, got %q", got)
+	}
+}
+
+func TestStressRunGenericImplAndDeriveEqual(t *testing.T) {
+	got := runCheck(t, `package main
+
+import "fmt"
+
+type Box[T comparable] struct {
+	Value T
+}
+
+derive Equal for Box[T]
+
+impl Box[T] {
+	func Get() T {
+		return self.Value
+	}
+}
+
+func main() {
+	box := Box[int]{Value: 7}
+	fmt.Println(box.Get(), box.Equal(Box[int]{Value: 7}))
+}
+`)
+	if got != "7 true" {
+		t.Errorf("expected generic impl/equal output, got %q", got)
 	}
 }
 

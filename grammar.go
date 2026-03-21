@@ -53,6 +53,7 @@ func Grammar() *GrammarType {
 		g.Define("enum_declaration", Seq(
 			Str("enum"),
 			Field("name", Sym("identifier")),
+			Optional(Field("type_parameters", Sym("type_parameter_list"))),
 			Str("{"),
 			CommaSep1(Sym("enum_variant")),
 			Optional(Str(",")), // trailing comma
@@ -172,7 +173,7 @@ func Grammar() *GrammarType {
 			Str("derive"),
 			Field("trait", Sym("identifier")),
 			Str("for"),
-			Field("type", Sym("identifier")),
+			Field("type", Choice(Sym("identifier"), Sym("generic_type"))),
 		))
 
 		// --- if let statement ---
@@ -247,7 +248,7 @@ func Grammar() *GrammarType {
 		// impl Type { fn methods... }
 		g.Define("impl_block", Seq(
 			Str("impl"),
-			Field("type", Sym("identifier")),
+			Field("type", Choice(Sym("identifier"), Sym("generic_type"))),
 			Sym("block"),
 		))
 

@@ -53,6 +53,30 @@ enum Color {
 	}
 }
 
+func TestTranspileGenericEnum(t *testing.T) {
+	source := []byte(`package main
+
+enum Option[T any] {
+	Some(T),
+	None,
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+
+	if !strings.Contains(goCode, "type Option[T any] struct") {
+		t.Error("expected generic enum type declaration")
+	}
+	if !strings.Contains(goCode, "func Some[T any](v0 T) Option[T]") {
+		t.Error("expected generic enum constructor")
+	}
+	if !strings.Contains(goCode, "func None[T any]() Option[T]") {
+		t.Error("expected generic enum zero-value constructor")
+	}
+}
+
 func TestTranspileNullCoalesce(t *testing.T) {
 	source := []byte(`package main
 
@@ -287,6 +311,48 @@ func findUser(id int) Option[string] {
 	}
 }
 
+func TestTranspileResultTypeFromInferredOkCall(t *testing.T) {
+	source := []byte(`package main
+
+func f() {
+	r := Ok(42)
+	_ = r
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+
+	if !strings.Contains(goCode, "type Result[T any] struct") {
+		t.Error("expected Result type definition to be injected for inferred Ok call")
+	}
+	if !strings.Contains(goCode, "func Ok[T any]") {
+		t.Error("expected Ok constructor to be injected for inferred Ok call")
+	}
+}
+
+func TestTranspileOptionTypeFromInferredSomeCall(t *testing.T) {
+	source := []byte(`package main
+
+func f() {
+	o := Some("alice")
+	_ = o
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+
+	if !strings.Contains(goCode, "type Option[T any] struct") {
+		t.Error("expected Option type definition to be injected for inferred Some call")
+	}
+	if !strings.Contains(goCode, "func Some[T any]") {
+		t.Error("expected Some constructor to be injected for inferred Some call")
+	}
+}
+
 func TestTranspileNoResultOptionWhenNotUsed(t *testing.T) {
 	source := []byte(`package main
 
@@ -443,6 +509,25 @@ derive Stringer for Color
 	}
 }
 
+func TestTranspileDeriveGenericEqual(t *testing.T) {
+	source := []byte(`package main
+
+type Box[T comparable] struct {
+	Value T
+}
+
+derive Equal for Box[T]
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+
+	if !strings.Contains(goCode, "func (x Box[T]) Equal(other Box[T]) bool") {
+		t.Errorf("expected generic Equal receiver, got:\n%s", goCode)
+	}
+}
+
 func TestTranspileDeriveJSON(t *testing.T) {
 	source := []byte(`package main
 derive JSON for Config
@@ -464,6 +549,31 @@ derive JSON for Config
 	}
 	if !strings.Contains(goCode, "json.Unmarshal") {
 		t.Error("expected json.Unmarshal call")
+	}
+}
+
+func TestTranspileDeriveGenericJSON(t *testing.T) {
+	source := []byte(`package main
+
+type Box[T any] struct {
+	Value T
+}
+
+derive JSON for Box[T]
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+
+	if !strings.Contains(goCode, "func (x Box[T]) MarshalJSON() ([]byte, error)") {
+		t.Errorf("expected generic MarshalJSON receiver, got:\n%s", goCode)
+	}
+	if !strings.Contains(goCode, "type _fwJSONAlias Box[T]") {
+		t.Errorf("expected local JSON alias for generic type, got:\n%s", goCode)
+	}
+	if !strings.Contains(goCode, "func (x *Box[T]) UnmarshalJSON(data []byte) error") {
+		t.Errorf("expected generic UnmarshalJSON receiver, got:\n%s", goCode)
 	}
 }
 
@@ -701,6 +811,29 @@ impl Point {
 	}
 	if strings.Contains(goCode, "impl") {
 		t.Error("should not contain 'impl' in output")
+	}
+}
+
+func TestTranspileGenericImplBlock(t *testing.T) {
+	source := []byte(`package main
+
+type Box[T any] struct {
+	Value T
+}
+
+impl Box[T] {
+	func Get() T {
+		return self.Value
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+
+	if !strings.Contains(goCode, "func (self Box[T]) Get() T") {
+		t.Errorf("expected generic impl receiver, got:\n%s", goCode)
 	}
 }
 

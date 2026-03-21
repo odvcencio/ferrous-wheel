@@ -136,6 +136,25 @@ enum Direction {
 	}
 }
 
+func TestEnumGeneric(t *testing.T) {
+	sexp := parseFW(t, `package main
+enum Option[T any] {
+	Some(T),
+	None,
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "enum_declaration") {
+		t.Error("expected enum_declaration")
+	}
+	if !strings.Contains(sexp, "type_parameter_list") {
+		t.Error("expected type_parameter_list")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
 func TestLet(t *testing.T) {
 	sexp := parseFW(t, `package main
 func f() {
@@ -191,6 +210,46 @@ func f() {
 	t.Logf("SExpr: %s", sexp)
 	if !strings.Contains(sexp, "lambda_expression") {
 		t.Error("expected lambda_expression")
+	}
+}
+
+func TestDeriveGenericType(t *testing.T) {
+	sexp := parseFW(t, `package main
+type Box[T comparable] struct {
+	Value T
+}
+derive Equal for Box[T]
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "derive_declaration") {
+		t.Error("expected derive_declaration")
+	}
+	if !strings.Contains(sexp, "generic_type") {
+		t.Error("expected generic_type")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestImplGenericType(t *testing.T) {
+	sexp := parseFW(t, `package main
+type Box[T any] struct {
+	Value T
+}
+impl Box[T] {
+	func Get() T { return self.Value }
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "impl_block") {
+		t.Error("expected impl_block")
+	}
+	if !strings.Contains(sexp, "generic_type") {
+		t.Error("expected generic_type")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
 	}
 }
 

@@ -360,6 +360,32 @@ func (t *fwTranspiler) childByField(n *gotreesitter.Node, field string) *gotrees
 	return n.ChildByFieldName(field, t.lang)
 }
 
+func (t *fwTranspiler) typeParameterDeclAndArgs(listNode *gotreesitter.Node) (decl, args string) {
+	if listNode == nil {
+		return "", ""
+	}
+
+	decl = t.text(listNode)
+
+	var names []string
+	for i := 0; i < int(listNode.NamedChildCount()); i++ {
+		paramDecl := listNode.NamedChild(i)
+		if paramDecl == nil || t.nodeType(paramDecl) != "type_parameter_declaration" {
+			continue
+		}
+		for j := 0; j < int(paramDecl.NamedChildCount()); j++ {
+			child := paramDecl.NamedChild(j)
+			if child != nil && t.nodeType(child) == "identifier" {
+				names = append(names, t.text(child))
+			}
+		}
+	}
+	if len(names) > 0 {
+		args = "[" + strings.Join(names, ", ") + "]"
+	}
+	return decl, args
+}
+
 func (t *fwTranspiler) callableTryTarget(n *gotreesitter.Node) (tryTarget, bool) {
 	resultNode := t.childByField(n, "result")
 	returnTypes := t.resultTypes(resultNode)
@@ -642,6 +668,7 @@ func (t *fwTranspiler) emitEnum(n *gotreesitter.Node) string {
 	if nameNode := t.childByField(n, "name"); nameNode != nil {
 		name = t.text(nameNode)
 	}
+	typeParamsDecl, typeParamsArgs := t.typeParameterDeclAndArgs(t.childByField(n, "type_parameters"))
 
 	// Collect variants
 	type variant struct {
@@ -670,7 +697,7 @@ func (t *fwTranspiler) emitEnum(n *gotreesitter.Node) string {
 	var b strings.Builder
 
 	// Struct with tag + variant fields
-	fmt.Fprintf(&b, "type %s struct {\n\ttag int\n", name)
+	fmt.Fprintf(&b, "type %s%s struct {\n\ttag int\n", name, typeParamsDecl)
 	for _, v := range variants {
 		for j, typ := range v.types {
 			fmt.Fprintf(&b, "\t%s%d %s\n", strings.ToLower(v.name), j, typ)
@@ -688,7 +715,8 @@ func (t *fwTranspiler) emitEnum(n *gotreesitter.Node) string {
 	// Constructor functions
 	for i, v := range variants {
 		if len(v.types) == 0 {
-			fmt.Fprintf(&b, "func %s() %s { return %s{tag: %d} }\n", v.name, name, name, i)
+			fmt.Fprintf(&b, "func %s%s() %s%s { return %s%s{tag: %d} }\n",
+				v.name, typeParamsDecl, name, typeParamsArgs, name, typeParamsArgs, i)
 		} else {
 			params := make([]string, len(v.types))
 			args := make([]string, len(v.types))
@@ -696,8 +724,8 @@ func (t *fwTranspiler) emitEnum(n *gotreesitter.Node) string {
 				params[j] = fmt.Sprintf("v%d %s", j, typ)
 				args[j] = fmt.Sprintf("%s%d: v%d", strings.ToLower(v.name), j, j)
 			}
-			fmt.Fprintf(&b, "func %s(%s) %s { return %s{tag: %d, %s} }\n",
-				v.name, strings.Join(params, ", "), name, name, i, strings.Join(args, ", "))
+			fmt.Fprintf(&b, "func %s%s(%s) %s%s { return %s%s{tag: %d, %s} }\n",
+				v.name, typeParamsDecl, strings.Join(params, ", "), name, typeParamsArgs, name, typeParamsArgs, i, strings.Join(args, ", "))
 		}
 	}
 
@@ -945,13 +973,13 @@ func (t *fwTranspiler) emitDerive(n *gotreesitter.Node) string {
 		b.WriteString("}\n")
 	case "JSON":
 		t.needsJSON = true
-		aliasName := fmt.Sprintf("_%sJSONAlias", typeName)
-		fmt.Fprintf(&b, "type %s %s\n", aliasName, typeName)
 		fmt.Fprintf(&b, "func (x %s) MarshalJSON() ([]byte, error) {\n", typeName)
-		fmt.Fprintf(&b, "\treturn json.Marshal(%s(x))\n", aliasName)
+		fmt.Fprintf(&b, "\ttype _fwJSONAlias %s\n", typeName)
+		b.WriteString("\treturn json.Marshal(_fwJSONAlias(x))\n")
 		b.WriteString("}\n")
 		fmt.Fprintf(&b, "func (x *%s) UnmarshalJSON(data []byte) error {\n", typeName)
-		fmt.Fprintf(&b, "\tvar tmp %s\n", aliasName)
+		fmt.Fprintf(&b, "\ttype _fwJSONAlias %s\n", typeName)
+		b.WriteString("\tvar tmp _fwJSONAlias\n")
 		b.WriteString("\tif err := json.Unmarshal(data, &tmp); err != nil {\n")
 		b.WriteString("\t\treturn err\n")
 		b.WriteString("\t}\n")
