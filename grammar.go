@@ -8,7 +8,7 @@ package ferrouswheel
 //	enum Color { Red, Green, Blue(int) }       -> struct + const + constructors
 //	match color { Red => ..., Blue(n) => ... } -> switch
 //	match x { n if n > 0 => "pos" }           -> switch with guard clauses
-//	let val = try doSomething()                -> bind values, propagate trailing error
+//	val := try doSomething()                   -> if err != nil { return ..., err }
 //	obj?.field                                 -> nil check + field access
 //	val ?? default                             -> if val != nil { ... } else { default }
 //	let x = 1                                  -> x := 1
@@ -30,11 +30,6 @@ package ferrouswheel
 //	swap(a, b)                                 -> tuple swap
 func Grammar() *GrammarType {
 	return ExtendGrammar("ferrous_wheel", GoGrammar(), func(g *GrammarType) {
-		appendChoices := func(name string, rules ...*Rule) {
-			for _, rule := range rules {
-				AppendChoice(g, name, rule)
-			}
-		}
 
 		// --- enum declaration ---
 		// enum Color { Red, Green, Blue(int) }
@@ -53,7 +48,6 @@ func Grammar() *GrammarType {
 		g.Define("enum_declaration", Seq(
 			Str("enum"),
 			Field("name", Sym("identifier")),
-			Optional(Field("type_parameters", Sym("type_parameter_list"))),
 			Str("{"),
 			CommaSep1(Sym("enum_variant")),
 			Optional(Str(",")), // trailing comma
@@ -119,8 +113,7 @@ func Grammar() *GrammarType {
 
 		// --- error propagation: try expr ---
 		// Uses try prefix instead of ? suffix to avoid DFA conflict with ??
-		// Lowering happens at supported assignment sites, e.g.
-		//   let val = try doSomething()
+		// try doSomething()  ->  if err != nil { return ..., err }
 		g.Define("error_propagation", PrecDynamic(-1,
 			Seq(
 				Str("try"),
@@ -128,31 +121,45 @@ func Grammar() *GrammarType {
 			),
 		))
 
-		// --- let binding: let x = expr ---
+		// --- let binding: let x = expr  or  let x: int = expr ---
 		g.Define("let_declaration", Seq(
 			Str("let"),
 			Field("name", Sym("identifier")),
+			Optional(Seq(Str(":"), Field("type_annotation", Sym("_type")))),
 			Str("="),
 			Field("value", Sym("_expression")),
 		))
 
-		// --- let multi-assignment: let (a, b) = f() ---
+		// --- let typed binding: name or name: Type (for multi-declarations) ---
+		g.Define("let_typed_binding", Seq(
+			Field("name", Sym("identifier")),
+			Optional(Seq(Str(":"), Field("type", Sym("_type")))),
+		))
+
+		// --- let multi-assignment: let (a, b) = f()  or  let (a: int, b: string) = f() ---
 		// Transpiles to: a, b := f()
 		g.Define("let_multi_declaration", Seq(
 			Str("let"),
 			Str("("),
-			CommaSep1(Sym("identifier")),
+			CommaSep1(Choice(Sym("let_typed_binding"), Sym("identifier"))),
 			Str(")"),
 			Str("="),
 			Field("value", Sym("_expression")),
 		))
 
+		// --- lambda typed param: name: Type ---
+		g.Define("lambda_typed_param", Seq(
+			Field("name", Sym("identifier")),
+			Str(":"),
+			Field("type", Sym("_type")),
+		))
+
 		// --- lambda: fn(params) body ---
 		// Uses fn keyword to avoid conflict with bitwise OR operator |.
-		// fn(x, y) x + y  or  fn(x) { return x * 2 }
+		// fn(x, y) x + y  or  fn(x: int, y: int) x + y  or  fn(x) { return x * 2 }
 		g.Define("lambda_params", Seq(
 			Str("("),
-			CommaSep1(Sym("identifier")),
+			CommaSep1(Choice(Sym("lambda_typed_param"), Sym("identifier"))),
 			Str(")"),
 		))
 
@@ -161,9 +168,13 @@ func Grammar() *GrammarType {
 		// than wrapping the lambda.
 		g.Define("_lambda_body", PrecRight(-100, Sym("_expression")))
 
+		// Token for -> to prevent splitting into - and >
+		g.Define("_fw_arrow_op", Token(Seq(Str("-"), Str(">"))))
+
 		g.Define("lambda_expression", PrecRight(-1, Seq(
 			Str("fn"),
 			Field("params", Sym("lambda_params")),
+			Optional(Seq(Sym("_fw_arrow_op"), Field("return_type", Sym("_type")))),
 			Field("body", Choice(Sym("block"), Sym("_lambda_body"))),
 		)))
 
@@ -173,7 +184,7 @@ func Grammar() *GrammarType {
 			Str("derive"),
 			Field("trait", Sym("identifier")),
 			Str("for"),
-			Field("type", Choice(Sym("identifier"), Sym("generic_type"))),
+			Field("type", Sym("identifier")),
 		))
 
 		// --- if let statement ---
@@ -232,7 +243,7 @@ func Grammar() *GrammarType {
 			Str("guard"),
 			Field("condition", Sym("_expression")),
 			Str("else"),
-			Field("body", Choice(Sym("block"), Sym("_statement"))),
+			Sym("block"),
 		))
 
 		// --- defer! error-capturing defer ---
@@ -248,7 +259,7 @@ func Grammar() *GrammarType {
 		// impl Type { fn methods... }
 		g.Define("impl_block", Seq(
 			Str("impl"),
-			Field("type", Choice(Sym("identifier"), Sym("generic_type"))),
+			Field("type", Sym("identifier")),
 			Sym("block"),
 		))
 
@@ -341,7 +352,7 @@ func Grammar() *GrammarType {
 		g.Define("mmap_block", Seq(
 			Str("mmap"),
 			Str("file"),
-			Field("path", Sym("_expression")),
+			Field("path", Sym("_string_literal")),
 			Str("as"),
 			Field("name", Sym("identifier")),
 			Field("type", Sym("_type")),
@@ -456,13 +467,15 @@ func Grammar() *GrammarType {
 		))
 
 		// Wire into grammar
-		appendChoices("_top_level_declaration",
+		for _, r := range []*Rule{
 			Sym("enum_declaration"),
 			Sym("derive_declaration"),
 			Sym("impl_block"),
-		)
+		} {
+			AppendChoice(g, "_top_level_declaration", r)
+		}
 
-		appendChoices("_expression",
+		for _, r := range []*Rule{
 			Sym("match_expression"),
 			Sym("null_coalesce"),
 			Sym("safe_navigation"),
@@ -477,9 +490,11 @@ func Grammar() *GrammarType {
 			// Concurrency
 			Sym("fan_in_expression"),
 			Sym("pipeline_expression"),
-		)
+		} {
+			AppendChoice(g, "_expression", r)
+		}
 
-		appendChoices("_statement",
+		for _, r := range []*Rule{
 			Sym("let_declaration"),
 			Sym("let_multi_declaration"),
 			Sym("enum_declaration"),
@@ -509,7 +524,9 @@ func Grammar() *GrammarType {
 			Sym("throttle_block"),
 			Sym("retry_block"),
 			Sym("breaker_block"),
-		)
+		} {
+			AppendChoice(g, "_statement", r)
+		}
 
 		// GLR conflicts for keyword ambiguities
 		AddConflict(g, "_statement", "let_declaration")
@@ -542,6 +559,10 @@ func Grammar() *GrammarType {
 
 		// let_multi conflicts with let_declaration on the "let" keyword
 		AddConflict(g, "let_declaration", "let_multi_declaration")
+
+		// typed annotations: identifier can start both typed and untyped alternatives
+		AddConflict(g, "lambda_typed_param", "identifier")
+		AddConflict(g, "let_typed_binding", "identifier")
 
 		// New feature conflicts
 		AddConflict(g, "_statement", "if_let_statement")
