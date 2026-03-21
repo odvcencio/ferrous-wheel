@@ -414,6 +414,7 @@ func (c *collector) collectImportSpec(n *gotreesitter.Node) {
 		Types: make(map[string]Type),
 		Vars:  make(map[string]Type),
 	}
+	c.env.importPathMap[alias] = path
 }
 
 // collectImpl extracts the receiver type and registers methods.
@@ -522,6 +523,7 @@ func (c *collector) collectFuncLiteralAsMethod(n *gotreesitter.Node, receiverTyp
 func parseTypeString(s string) Type {
 	s = strings.TrimSpace(s)
 	if s == "" {
+		// TODO: return an error instead of defaulting to any
 		return Primitive("any")
 	}
 

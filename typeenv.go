@@ -26,12 +26,13 @@ func (s *Scope) get(name string) (Type, bool) {
 
 // TypeEnv is the type environment for a single file.
 type TypeEnv struct {
-	scope    *Scope
-	funcs    map[string]*FuncType
-	structs  map[string]*StructType
-	enums    map[string]*EnumType
-	imports  map[string]ImportScope // import path -> exported types
-	filename string
+	scope         *Scope
+	funcs         map[string]*FuncType
+	structs       map[string]*StructType
+	enums         map[string]*EnumType
+	imports       map[string]ImportScope // alias -> exported types
+	importPathMap map[string]string      // alias -> full import path
+	filename      string
 }
 
 // ImportScope holds the exported types from one Go package.
@@ -43,11 +44,12 @@ type ImportScope struct {
 
 func NewTypeEnv() *TypeEnv {
 	return &TypeEnv{
-		scope:   newScope(nil),
-		funcs:   make(map[string]*FuncType),
-		structs: make(map[string]*StructType),
-		enums:   make(map[string]*EnumType),
-		imports: make(map[string]ImportScope),
+		scope:         newScope(nil),
+		funcs:         make(map[string]*FuncType),
+		structs:       make(map[string]*StructType),
+		enums:         make(map[string]*EnumType),
+		imports:       make(map[string]ImportScope),
+		importPathMap: make(map[string]string),
 	}
 }
 
@@ -113,3 +115,12 @@ func (e *TypeEnv) Enums() map[string]*EnumType { return e.enums }
 
 // Imports returns the import scopes.
 func (e *TypeEnv) Imports() map[string]ImportScope { return e.imports }
+
+// importPaths returns the full import paths collected during type collection.
+func (e *TypeEnv) importPaths() []string {
+	paths := make([]string, 0, len(e.importPathMap))
+	for _, p := range e.importPathMap {
+		paths = append(paths, p)
+	}
+	return paths
+}

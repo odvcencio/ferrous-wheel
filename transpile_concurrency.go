@@ -108,7 +108,6 @@ func (t *fwTranspiler) emitFanOut(n *gotreesitter.Node) string {
 // fan in [ch1, ch2, ch3] -> helper-backed merge
 func (t *fwTranspiler) emitFanIn(n *gotreesitter.Node) string {
 	t.needsSync = true
-	t.needsReflect = true
 	t.needsFanIn = true
 
 	var channels []string
