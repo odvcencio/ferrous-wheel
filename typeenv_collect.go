@@ -7,9 +7,13 @@ import (
 	gotreesitter "github.com/odvcencio/gotreesitter"
 )
 
-// collectTypes parses FW/Go source and walks the CST to register all
+// CollectTypes parses FW/Go source and walks the CST to register all
 // top-level declarations (functions, structs, enums, imports, impl blocks)
 // into a TypeEnv.
+func CollectTypes(src []byte) (*TypeEnv, error) {
+	return collectTypes(src)
+}
+
 func collectTypes(src []byte) (*TypeEnv, error) {
 	lang, err := getFWLanguage()
 	if err != nil {
