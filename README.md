@@ -1,6 +1,6 @@
 # Ferrous Wheel
 
-Rust-inspired syntax sugar, low-level memory primitives, and concurrency patterns for Go. 33 language features compiled to standard Go. No runtime library, no CGO.
+Rust-inspired syntax sugar, low-level memory primitives, and concurrency patterns for Go. Generic enums, `derive`, `impl`, and dozens of other language features compile to standard Go. No runtime library, no CGO.
 
 Built on [gotreesitter](https://github.com/odvcencio/gotreesitter)'s `grammargen` — a pure-Go grammar generator with production-grade Go grammar support (100% parity with tree-sitter's C implementation). Inspired by [dingo](https://github.com/MadAppGang/dingo) by MadAppGang — this is a separate project exploring similar ideas through grammar composition.
 
@@ -48,11 +48,15 @@ go install github.com/odvcencio/ferrous-wheel/cmd/ferrous-wheel@latest
 ## Usage
 
 ```bash
-ferrous-wheel emit myfile.fw > myfile_generated.go  # transpile to Go
+ferrous-wheel emit myfile.fw > myfile_generated.go  # transpile to Go on stdout
 ferrous-wheel run myfile.fw                         # transpile + execute
-ferrous-wheel build myfile.fw -o myapp             # compile a native binary
+ferrous-wheel build myfile.fw -o dist/myapp        # compile a native binary
 go run myfile_generated.go                         # or run the emitted Go directly
 ```
+
+`emit` writes standard Go source to stdout with a generated-file header, which makes it easy to inspect, diff, pipe through `gofmt`, or check into a build artifact directory.
+
+`build` accepts `-o` for the output path, rejects malformed extra arguments, and creates missing parent directories for nested output paths such as `dist/myapp`.
 
 ---
 
@@ -103,6 +107,30 @@ impl Vector {
 }
 ```
 
+### Generic enums, derives, and impl blocks
+
+```fw
+enum Option[T any] {
+    Some(T),
+    None,
+}
+
+type Box[T any] struct {
+    value T
+}
+
+derive Equal for Box[T]
+derive JSON for Box[T]
+
+impl Box[T] {
+    fn unwrap(self) T {
+        return self.value
+    }
+}
+```
+
+FW-native constructs now preserve generic parameters end to end, so enum constructors, derived methods, and `impl` receivers emit valid generic Go.
+
 ### Result and Option types
 
 ```fw
@@ -110,7 +138,14 @@ func findUser(id int) Result[User] {
     if id <= 0 {
         return Err[User](errors.New("invalid id"))
     }
-    return Ok(User{ID: id, Name: "Alice"})
+    return Ok(User{ID: id, Name: "Alice"})   // T inferred from the value
+}
+
+func findNickname(id int) Option[string] {
+    if id <= 0 {
+        return None[string]()
+    }
+    return Some("alice")                     // T inferred from the value
 }
 
 func main() {
@@ -119,6 +154,8 @@ func main() {
     let mapped = result.Map(func(u User) User { u.Name = strings.ToUpper(u.Name); return u })
 }
 ```
+
+Built-in `Result` and `Option` helpers are injected only when that helper family is actually used. Ferrous Wheel also avoids colliding with user-defined `Result`, `Option`, `Ok`, `Err`, `Some`, or `None` declarations.
 
 ---
 
@@ -343,6 +380,8 @@ arena bigPool 16 * 1024 * 1024 {
 }
 ```
 
+Arena helpers are intentionally explicit: negative sizes panic, zero-size allocations return `nil`, and over-capacity allocations fail fast with a clear panic instead of falling through to a raw slice panic.
+
 ### Pin / Unpin — experimental liveness hints
 
 ```fw
@@ -378,6 +417,8 @@ mmap file "database.bin" as data []byte {
 }
 // File automatically unmapped and closed here.
 ```
+
+`mmap` currently requires the target binding type to be `[]byte`. Open, stat, map, and unmap failures panic immediately, and empty files produce an empty slice without attempting to map zero bytes.
 
 ### Packed annotations and vectorize hints
 
@@ -590,11 +631,14 @@ func processCSV(path string) []Record {
 ## Design notes
 
 - All output is standard Go. No runtime library, no hidden dependencies.
+- Generic support covers plain Go generics plus FW-native `enum`, `derive`, and `impl` constructs.
 - `??` uses `reflect.ValueOf` zero-value checks — works with all types.
 - `match` is exhaustive at runtime — unmatched values panic.
 - `?.` uses reflection for field access on pointer, interface, and struct values.
 - `arena` generates bump-allocation helpers; ordinary allocations are unaffected unless you call those helpers directly.
+- Built-in `Result` and `Option` helpers are injected only when actually used, and helper detection is based on generated Go structure rather than string matching.
 - Concurrency primitives compile to Go patterns such as `sync.WaitGroup`, `select`, helper functions, and channels, with validation for unsupported block shapes.
+- `mmap` blocks currently validate `[]byte` targets before code generation.
 - Ferrous Wheel feature keywords are parsed contextually inside `.fw` files.
 - Auto-injected imports: `fmt`, `reflect`, `unsafe`, `runtime`, `os`, `syscall`, `sync`, `time` — only when the corresponding feature is used.
 
