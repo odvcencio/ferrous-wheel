@@ -7,7 +7,7 @@ import (
 
 func TestLineDirectivesInFunctionDecl(t *testing.T) {
 	src := []byte("package main\n\nfunc hello() string {\n\treturn \"world\"\n}\n")
-	goCode, err := TranspileWithOptions(src, TranspileOptions{SourceFile: "test.fw"})
+	goCode, _, err := TranspileWithOptions(src, TranspileOptions{SourceFile: "test.fw"})
 	if err != nil {
 		t.Fatalf("transpile: %v", err)
 	}

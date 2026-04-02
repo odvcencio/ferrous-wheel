@@ -354,6 +354,7 @@ func Grammar() *GrammarType {
 			Str("mmap"),
 			Str("file"),
 			Field("path", Sym("_string_literal")),
+			Optional(Field("writable", Str("writable"))),
 			Str("as"),
 			Field("name", Sym("identifier")),
 			Field("type", Sym("_type")),

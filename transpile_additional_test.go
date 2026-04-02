@@ -183,6 +183,10 @@ func main() {
 func TestTranspileRejectsConcurrentDeclarations(t *testing.T) {
 	source := []byte(`package main
 
+func fetchUsers() []string {
+	return nil
+}
+
 func main() {
 	concurrent {
 		let users = fetchUsers()
@@ -193,7 +197,13 @@ func main() {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if !strings.Contains(err.Error(), "let_declaration is not supported inside concurrent blocks") {
+	if !strings.Contains(err.Error(), "concurrent block cannot contain variable declarations") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "var users []string") {
+		t.Fatalf("expected suggested predeclaration, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "users = fetchUsers()") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

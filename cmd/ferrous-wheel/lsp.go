@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
 	ferrouswheel "github.com/odvcencio/ferrous-wheel"
+	gotreesitter "github.com/odvcencio/gotreesitter"
 )
 
 // --- JSON-RPC 2.0 types ---
@@ -63,6 +66,12 @@ type didChangeParams struct {
 	} `json:"contentChanges"`
 }
 
+type didSaveParams struct {
+	TextDocument struct {
+		URI string `json:"uri"`
+	} `json:"textDocument"`
+}
+
 type hoverParams struct {
 	TextDocument struct{ URI string } `json:"textDocument"`
 	Position     position             `json:"position"`
@@ -96,8 +105,20 @@ type lspRange struct {
 // --- Document state ---
 
 type document struct {
-	text string
-	env  *ferrouswheel.TypeEnv
+	uri   string
+	path  string
+	dir   string
+	text  string
+	env   *ferrouswheel.TypeEnv
+	root  *gotreesitter.Node
+	lang  *gotreesitter.Language
+	src   []byte
+	dirty bool
+}
+
+type directoryState struct {
+	env   *ferrouswheel.TypeEnv
+	dirty bool
 }
 
 // --- Server ---
@@ -105,6 +126,7 @@ type document struct {
 type lspServer struct {
 	mu        sync.Mutex
 	docs      map[string]*document
+	dirs      map[string]*directoryState
 	writer    io.Writer
 	lastDiags map[string][]diagnostic
 }
@@ -112,6 +134,7 @@ type lspServer struct {
 func newLSPServer(w io.Writer) *lspServer {
 	return &lspServer{
 		docs:      make(map[string]*document),
+		dirs:      make(map[string]*directoryState),
 		writer:    w,
 		lastDiags: make(map[string][]diagnostic),
 	}
@@ -155,14 +178,18 @@ func (s *lspServer) handle(msg *jsonrpcMessage) *jsonrpcMessage {
 		}
 		return nil
 
+	case "textDocument/didSave":
+		var p didSaveParams
+		json.Unmarshal(msg.Params, &p)
+		s.saveDoc(p.TextDocument.URI)
+		return nil
+
 	case "textDocument/didClose":
 		var p struct {
 			TextDocument struct{ URI string } `json:"textDocument"`
 		}
 		json.Unmarshal(msg.Params, &p)
-		s.mu.Lock()
-		delete(s.docs, p.TextDocument.URI)
-		s.mu.Unlock()
+		s.closeDoc(p.TextDocument.URI)
 		return nil
 
 	case "textDocument/hover":
@@ -203,37 +230,214 @@ func (s *lspServer) handle(msg *jsonrpcMessage) *jsonrpcMessage {
 
 func (s *lspServer) openDoc(uri, text string) {
 	s.mu.Lock()
-	env := s.buildEnv(text)
-	s.docs[uri] = &document{text: text, env: env}
+	s.docs[uri] = &document{
+		uri:   uri,
+		path:  filePathForURI(uri),
+		dir:   dirForURI(uri),
+		text:  text,
+		dirty: true,
+	}
+	s.markDirDirtyLocked(dirForURI(uri))
 	s.mu.Unlock()
-	s.publishDiagnostics(uri, text)
 }
 
 func (s *lspServer) updateDoc(uri, text string) {
 	s.mu.Lock()
-	env := s.buildEnv(text)
-	s.docs[uri] = &document{text: text, env: env}
+	if doc, ok := s.docs[uri]; ok {
+		doc.text = text
+		doc.dirty = true
+		s.markDirDirtyLocked(doc.dir)
+	} else {
+		s.docs[uri] = &document{
+			uri:   uri,
+			path:  filePathForURI(uri),
+			dir:   dirForURI(uri),
+			text:  text,
+			dirty: true,
+		}
+		s.markDirDirtyLocked(dirForURI(uri))
+	}
 	s.mu.Unlock()
-	s.publishDiagnostics(uri, text)
 }
 
-func (s *lspServer) buildEnv(text string) *ferrouswheel.TypeEnv {
-	env, err := ferrouswheel.CollectTypes([]byte(text))
+func (s *lspServer) saveDoc(uri string) {
+	s.publishDiagnostics(uri)
+}
+
+func filePathForURI(uri string) string {
+	parsed, err := url.Parse(uri)
+	if err != nil || parsed.Scheme != "file" {
+		return ""
+	}
+	return parsed.Path
+}
+
+func dirForURI(uri string) string {
+	path := filePathForURI(uri)
+	if path == "" {
+		return ""
+	}
+	return filepath.Dir(path)
+}
+
+func uriForPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
+}
+
+func parseDocument(text string) (*gotreesitter.Node, *gotreesitter.Language, []byte, error) {
+	lang, err := ferrouswheel.GetFWLanguage()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	src := []byte(text)
+	parser := gotreesitter.NewParser(lang)
+	tree, err := parser.Parse(src)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return tree.RootNode(), lang, src, nil
+}
+
+func (s *lspServer) directoryStateLocked(dir string) *directoryState {
+	state, ok := s.dirs[dir]
+	if !ok {
+		state = &directoryState{dirty: true}
+		s.dirs[dir] = state
+	}
+	return state
+}
+
+func (s *lspServer) markDirDirtyLocked(dir string) {
+	s.directoryStateLocked(dir).dirty = true
+}
+
+func (s *lspServer) gatherDirSourcesLocked(dir string) map[string][]byte {
+	files := make(map[string][]byte)
+	if dir != "" {
+		matches, err := filepath.Glob(filepath.Join(dir, "*.fw"))
+		if err == nil {
+			for _, match := range matches {
+				src, readErr := os.ReadFile(match)
+				if readErr == nil {
+					files[match] = src
+				}
+			}
+		}
+	}
+	for _, doc := range s.docs {
+		if doc.dir != dir || doc.path == "" {
+			continue
+		}
+		files[doc.path] = []byte(doc.text)
+	}
+	return files
+}
+
+func (s *lspServer) buildDirEnvLocked(dir string) *ferrouswheel.TypeEnv {
+	files := s.gatherDirSourcesLocked(dir)
+	if len(files) == 0 {
+		return ferrouswheel.NewTypeEnv()
+	}
+	env, err := ferrouswheel.CollectTypesMulti(files)
 	if err != nil {
 		return ferrouswheel.NewTypeEnv()
+	}
+	moduleDir := ""
+	if dir != "" {
+		moduleDir = ferrouswheel.FindModuleDir(filepath.Join(dir, "dummy.fw"))
+	}
+	if err := env.LoadCollectedImports(moduleDir); err != nil {
+		return env
 	}
 	return env
 }
 
-func (s *lspServer) publishDiagnostics(uri, text string) {
+func (s *lspServer) ensureDocBuiltLocked(uri string) (*document, bool) {
+	doc, ok := s.docs[uri]
+	if !ok {
+		return nil, false
+	}
+	if doc.dirty || doc.root == nil || doc.lang == nil {
+		root, lang, src, err := parseDocument(doc.text)
+		if err == nil {
+			doc.root = root
+			doc.lang = lang
+			doc.src = src
+		} else {
+			doc.root = nil
+			doc.lang = nil
+			doc.src = []byte(doc.text)
+		}
+	}
+	dirState := s.directoryStateLocked(doc.dir)
+	if dirState.dirty || dirState.env == nil || doc.env == nil {
+		dirState.env = s.buildDirEnvLocked(doc.dir)
+		dirState.dirty = false
+		for _, sibling := range s.docs {
+			if sibling.dir == doc.dir {
+				sibling.env = dirState.env
+			}
+		}
+	}
+	doc.env = dirState.env
+	doc.dirty = false
+	return doc, true
+}
+
+func (s *lspServer) closeDoc(uri string) {
+	s.mu.Lock()
+	if doc, ok := s.docs[uri]; ok {
+		delete(s.docs, uri)
+		s.markDirDirtyLocked(doc.dir)
+	} else {
+		delete(s.docs, uri)
+	}
+	s.mu.Unlock()
+}
+
+func (s *lspServer) publishDiagnostics(uri string) {
 	var diags []diagnostic
-	_, err := ferrouswheel.Transpile([]byte(text))
+	s.mu.Lock()
+	doc, ok := s.docs[uri]
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	text := doc.text
+	path := doc.path
+	s.mu.Unlock()
+
+	_, warnings, err := ferrouswheel.TranspileWithOptions([]byte(text), ferrouswheel.TranspileOptions{
+		SourceFile: path,
+	})
 	if err != nil {
 		diags = append(diags, diagnostic{
 			Range:    lspRange{Start: position{0, 0}, End: position{0, 1}},
 			Message:  err.Error(),
 			Severity: 1,
 		})
+	} else {
+		for _, warning := range warnings {
+			line := warning.Line - 1
+			col := warning.Col - 1
+			if line < 0 {
+				line = 0
+			}
+			if col < 0 {
+				col = 0
+			}
+			diags = append(diags, diagnostic{
+				Range: lspRange{
+					Start: position{Line: line, Character: col},
+					End:   position{Line: line, Character: col + 1},
+				},
+				Message:  warning.Message,
+				Severity: 2,
+			})
+		}
 	}
 	s.mu.Lock()
 	s.lastDiags[uri] = diags
@@ -248,32 +452,34 @@ func (s *lspServer) publishDiagnostics(uri, text string) {
 
 func (s *lspServer) hover(id *json.RawMessage, p hoverParams) *jsonrpcMessage {
 	s.mu.Lock()
-	doc, ok := s.docs[p.TextDocument.URI]
+	doc, ok := s.ensureDocBuiltLocked(p.TextDocument.URI)
 	s.mu.Unlock()
 	if !ok {
 		return s.respond(id, nil)
 	}
 
-	lines := strings.Split(doc.text, "\n")
-	if p.Position.Line >= len(lines) {
-		return s.respond(id, nil)
-	}
-	line := lines[p.Position.Line]
-	word := wordAtPosition(line, p.Position.Character)
-	if word == "" {
-		return s.respond(id, nil)
+	node := nodeAtPosition(doc.root, p.Position)
+	if node != nil && doc.env != nil && doc.lang != nil {
+		typ, err := doc.env.ResolveAt(doc.root, node, doc.lang, doc.src)
+		if err == nil && typ != nil {
+			label := nodeTextAt(doc.src, hoverLabelNode(node, doc.lang))
+			if label == "" {
+				label = nodeTextAt(doc.src, node)
+			}
+			return s.respond(id, hoverResult{
+				Contents: markupContent{Kind: "markdown", Value: fmt.Sprintf("```go\n%s %s\n```", label, typ.String())},
+			})
+		}
 	}
 
 	if doc.env != nil {
-		if fn, err := doc.env.LookupFunc(word); err == nil {
-			return s.respond(id, hoverResult{
-				Contents: markupContent{Kind: "markdown", Value: fmt.Sprintf("```go\n%s %s\n```", word, fn.String())},
-			})
-		}
-		if v, err := doc.env.LookupVar(word); err == nil {
-			return s.respond(id, hoverResult{
-				Contents: markupContent{Kind: "markdown", Value: fmt.Sprintf("```go\n%s %s\n```", word, v.String())},
-			})
+		word := wordAt(doc.text, p.Position)
+		if word != "" {
+			if symbol, ok := doc.env.FindSymbol(word); ok && symbol.Type != nil {
+				return s.respond(id, hoverResult{
+					Contents: markupContent{Kind: "markdown", Value: fmt.Sprintf("```go\n%s %s\n```", word, symbol.Type.String())},
+				})
+			}
 		}
 	}
 
@@ -289,7 +495,7 @@ type completionItem struct {
 
 func (s *lspServer) completion(id *json.RawMessage, uri string, pos position) *jsonrpcMessage {
 	s.mu.Lock()
-	doc, ok := s.docs[uri]
+	doc, ok := s.ensureDocBuiltLocked(uri)
 	s.mu.Unlock()
 	if !ok {
 		return s.respond(id, []completionItem{})
@@ -381,102 +587,26 @@ type locationResult struct {
 
 func (s *lspServer) definition(id *json.RawMessage, uri string, pos position) *jsonrpcMessage {
 	s.mu.Lock()
-	doc, ok := s.docs[uri]
+	doc, ok := s.ensureDocBuiltLocked(uri)
 	s.mu.Unlock()
 	if !ok {
 		return s.respond(id, nil)
 	}
 
-	lines := strings.Split(doc.text, "\n")
-	if pos.Line >= len(lines) {
-		return s.respond(id, nil)
-	}
-	line := lines[pos.Line]
-	word := wordAtPosition(line, pos.Character)
+	word := wordAt(doc.text, pos)
 	if word == "" {
 		return s.respond(id, nil)
 	}
-
-	// Search for the declaration of this word in the document
-	for i, l := range lines {
-		trimmed := strings.TrimSpace(l)
-
-		// func name(
-		if strings.HasPrefix(trimmed, "func ") {
-			fname := extractFuncName(trimmed)
-			if fname == word {
-				col := strings.Index(l, word)
-				return s.respond(id, locationResult{
-					URI: uri,
-					Range: lspRange{
-						Start: position{Line: i, Character: col},
-						End:   position{Line: i, Character: col + len(word)},
-					},
-				})
+	if doc.env != nil {
+		if symbol, ok := doc.env.FindSymbol(word); ok {
+			targetURI := uri
+			if symbol.Location.File != "" {
+				targetURI = uriForPath(symbol.Location.File)
 			}
-		}
-
-		// let name =
-		if strings.HasPrefix(trimmed, "let ") {
-			rest := strings.TrimPrefix(trimmed, "let ")
-			// Check for exact name followed by = or :
-			if idx := strings.IndexAny(rest, " =:"); idx > 0 {
-				name := rest[:idx]
-				if name == word {
-					col := strings.Index(l, word)
-					return s.respond(id, locationResult{
-						URI: uri,
-						Range: lspRange{
-							Start: position{Line: i, Character: col},
-							End:   position{Line: i, Character: col + len(word)},
-						},
-					})
-				}
-			}
-		}
-
-		// enum Name {
-		if strings.HasPrefix(trimmed, "enum ") {
-			fields := strings.Fields(trimmed)
-			if len(fields) >= 2 && fields[1] == word {
-				col := strings.Index(l, word)
-				return s.respond(id, locationResult{
-					URI: uri,
-					Range: lspRange{
-						Start: position{Line: i, Character: col},
-						End:   position{Line: i, Character: col + len(word)},
-					},
-				})
-			}
-		}
-
-		// type Name struct/interface
-		if strings.HasPrefix(trimmed, "type ") {
-			fields := strings.Fields(trimmed)
-			if len(fields) >= 2 && fields[1] == word {
-				col := strings.Index(l, word)
-				return s.respond(id, locationResult{
-					URI: uri,
-					Range: lspRange{
-						Start: position{Line: i, Character: col},
-						End:   position{Line: i, Character: col + len(word)},
-					},
-				})
-			}
-		}
-
-		// name := or name = (short var declaration)
-		if strings.Contains(l, word+" :=") {
-			col := strings.Index(l, word)
-			if col >= 0 {
-				return s.respond(id, locationResult{
-					URI: uri,
-					Range: lspRange{
-						Start: position{Line: i, Character: col},
-						End:   position{Line: i, Character: col + len(word)},
-					},
-				})
-			}
+			return s.respond(id, locationResult{
+				URI:   targetURI,
+				Range: lspRangeFromSource(symbol.Location),
+			})
 		}
 	}
 
@@ -485,49 +615,21 @@ func (s *lspServer) definition(id *json.RawMessage, uri string, pos position) *j
 
 func (s *lspServer) documentSymbols(id *json.RawMessage, uri string) *jsonrpcMessage {
 	s.mu.Lock()
-	doc, ok := s.docs[uri]
+	doc, ok := s.ensureDocBuiltLocked(uri)
 	s.mu.Unlock()
 	if !ok {
 		return s.respond(id, []interface{}{})
 	}
 
 	var symbols []map[string]interface{}
-	lines := strings.Split(doc.text, "\n")
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "func ") {
-			name := extractFuncName(trimmed)
-			if name != "" {
-				symbols = append(symbols, map[string]interface{}{
-					"name": name,
-					"kind": 12, // Function
-					"range": lspRange{
-						Start: position{Line: i, Character: 0},
-						End:   position{Line: i, Character: len(line)},
-					},
-					"selectionRange": lspRange{
-						Start: position{Line: i, Character: strings.Index(line, name)},
-						End:   position{Line: i, Character: strings.Index(line, name) + len(name)},
-					},
-				})
-			}
-		} else if strings.HasPrefix(trimmed, "enum ") {
-			fields := strings.Fields(trimmed)
-			if len(fields) >= 2 {
-				name := fields[1]
-				symbols = append(symbols, map[string]interface{}{
-					"name": name,
-					"kind": 10, // Enum
-					"range": lspRange{
-						Start: position{Line: i, Character: 0},
-						End:   position{Line: i, Character: len(line)},
-					},
-					"selectionRange": lspRange{
-						Start: position{Line: i, Character: strings.Index(line, name)},
-						End:   position{Line: i, Character: strings.Index(line, name) + len(name)},
-					},
-				})
-			}
+	if doc.env != nil {
+		for _, symbol := range doc.env.FindFileSymbols(doc.path) {
+			symbols = append(symbols, map[string]interface{}{
+				"name":           symbolLabel(symbol),
+				"kind":           lspSymbolKind(symbol.Kind),
+				"range":          lspRangeFromSource(symbol.Location),
+				"selectionRange": lspRangeFromSource(symbol.Location),
+			})
 		}
 	}
 	return s.respond(id, symbols)
@@ -564,6 +666,95 @@ func wordAtPosition(line string, col int) string {
 		return ""
 	}
 	return line[start:end]
+}
+
+func wordAt(text string, pos position) string {
+	lines := strings.Split(text, "\n")
+	if pos.Line < 0 || pos.Line >= len(lines) {
+		return ""
+	}
+	return wordAtPosition(lines[pos.Line], pos.Character)
+}
+
+func nodeAtPosition(root *gotreesitter.Node, pos position) *gotreesitter.Node {
+	if root == nil {
+		return nil
+	}
+	point := gotreesitter.Point{Row: uint32(pos.Line), Column: uint32(pos.Character)}
+	cursor := gotreesitter.NewTreeCursor(root, nil)
+	for {
+		if cursor.GotoFirstChildForPoint(point) < 0 {
+			break
+		}
+	}
+	node := cursor.CurrentNode()
+	for node != nil && !node.IsNamed() {
+		node = node.Parent()
+	}
+	return node
+}
+
+func hoverLabelNode(node *gotreesitter.Node, lang *gotreesitter.Language) *gotreesitter.Node {
+	if node == nil {
+		return nil
+	}
+	parent := node.Parent()
+	if parent == nil {
+		return node
+	}
+	switch parent.Type(lang) {
+	case "selector_expression", "safe_navigation":
+		field := parent.ChildByFieldName("field", lang)
+		if field != nil {
+			return field
+		}
+	}
+	return node
+}
+
+func nodeTextAt(src []byte, node *gotreesitter.Node) string {
+	if node == nil {
+		return ""
+	}
+	return string(src[node.StartByte():node.EndByte()])
+}
+
+func lspRangeFromSource(loc ferrouswheel.SourceRange) lspRange {
+	startLine := loc.StartRow
+	startCol := loc.StartCol
+	endLine := loc.EndRow
+	endCol := loc.EndCol
+	if endLine < startLine || (endLine == startLine && endCol <= startCol) {
+		endLine = startLine
+		endCol = startCol + 1
+	}
+	return lspRange{
+		Start: position{Line: startLine, Character: startCol},
+		End:   position{Line: endLine, Character: endCol},
+	}
+}
+
+func lspSymbolKind(kind ferrouswheel.SymbolKind) int {
+	switch kind {
+	case ferrouswheel.SymFunc:
+		return 12
+	case ferrouswheel.SymStruct:
+		return 23
+	case ferrouswheel.SymEnum:
+		return 10
+	case ferrouswheel.SymVar:
+		return 13
+	case ferrouswheel.SymConst:
+		return 14
+	case ferrouswheel.SymImpl:
+		return 6
+	default:
+		return 13
+	}
+}
+
+func symbolLabel(symbol ferrouswheel.SymbolInfo) string {
+	return symbol.Name
 }
 
 func isIdentChar(b byte) bool {

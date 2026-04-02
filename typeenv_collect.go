@@ -2,6 +2,9 @@ package ferrouswheel
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	gotreesitter "github.com/odvcencio/gotreesitter"
@@ -11,26 +14,74 @@ import (
 // top-level declarations (functions, structs, enums, imports, impl blocks)
 // into a TypeEnv.
 func CollectTypes(src []byte) (*TypeEnv, error) {
-	return collectTypes(src)
+	return CollectTypesMulti(map[string][]byte{"": src})
 }
 
 func collectTypes(src []byte) (*TypeEnv, error) {
+	env := NewTypeEnv()
+	if err := collectIntoEnv(env, "", src); err != nil {
+		return nil, err
+	}
+	env.bindNamedTypes()
+	return env, nil
+}
+
+// CollectTypesMulti parses multiple files into a shared type environment.
+func CollectTypesMulti(files map[string][]byte) (*TypeEnv, error) {
+	env := NewTypeEnv()
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := collectIntoEnv(env, name, files[name]); err != nil {
+			return nil, err
+		}
+	}
+	env.bindNamedTypes()
+	return env, nil
+}
+
+// CollectTypesFromDir loads all .fw files from a directory into one environment.
+func CollectTypesFromDir(dir string) (*TypeEnv, error) {
+	matches, err := filepath.Glob(filepath.Join(dir, "*.fw"))
+	if err != nil {
+		return nil, fmt.Errorf("glob %s: %w", dir, err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no .fw files found in %s", dir)
+	}
+	files := make(map[string][]byte, len(matches))
+	for _, match := range matches {
+		src, readErr := os.ReadFile(match)
+		if readErr != nil {
+			return nil, fmt.Errorf("read %s: %w", match, readErr)
+		}
+		files[match] = src
+	}
+	return CollectTypesMulti(files)
+}
+
+func collectIntoEnv(env *TypeEnv, filename string, src []byte) error {
 	lang, err := getFWLanguage()
 	if err != nil {
-		return nil, fmt.Errorf("generate language: %w", err)
+		return fmt.Errorf("generate language: %w", err)
 	}
 
 	parser := gotreesitter.NewParser(lang)
 	tree, err := parser.Parse(src)
 	if err != nil {
-		return nil, fmt.Errorf("parse: %w", err)
+		return fmt.Errorf("parse: %w", err)
 	}
 
 	root := tree.RootNode()
-	env := NewTypeEnv()
-	c := &collector{env: env, src: src, lang: lang}
+	c := &collector{env: env, src: src, lang: lang, file: filename}
 	c.walkChildren(root)
-	return env, nil
+	if c.err != nil {
+		return c.err
+	}
+	return nil
 }
 
 // collector walks the CST and populates a TypeEnv.
@@ -38,6 +89,8 @@ type collector struct {
 	env  *TypeEnv
 	src  []byte
 	lang *gotreesitter.Language
+	file string
+	err  error
 }
 
 func (c *collector) text(n *gotreesitter.Node) string {
@@ -52,12 +105,114 @@ func (c *collector) childByField(n *gotreesitter.Node, field string) *gotreesitt
 	return n.ChildByFieldName(field, c.lang)
 }
 
+func (c *collector) fail(err error) {
+	if c.err == nil {
+		c.err = err
+	}
+}
+
+func (c *collector) sourceRange(n *gotreesitter.Node) SourceRange {
+	if n == nil {
+		return SourceRange{File: c.file}
+	}
+	start := n.StartPoint()
+	end := n.EndPoint()
+	return SourceRange{
+		File:     c.file,
+		StartRow: int(start.Row),
+		StartCol: int(start.Column),
+		EndRow:   int(end.Row),
+		EndCol:   int(end.Column),
+	}
+}
+
+func (c *collector) registerSymbol(name string, kind SymbolKind, typ Type, node *gotreesitter.Node) bool {
+	if err := c.env.registerSymbol(SymbolInfo{
+		Name:     name,
+		Kind:     kind,
+		Type:     typ,
+		Location: c.sourceRange(node),
+	}); err != nil {
+		c.fail(err)
+		return false
+	}
+	return true
+}
+
+func (c *collector) registerFunc(name string, kind SymbolKind, typ *FuncType, node *gotreesitter.Node) {
+	if !c.registerSymbol(name, kind, typ, node) {
+		return
+	}
+	c.env.RegisterFunc(name, typ)
+}
+
+func (c *collector) registerStruct(name string, typ *StructType, node *gotreesitter.Node) {
+	if !c.registerSymbol(name, SymStruct, typ, node) {
+		return
+	}
+	c.env.RegisterStruct(name, typ)
+}
+
+func (c *collector) registerEnum(name string, typ *EnumType, node *gotreesitter.Node) {
+	if !c.registerSymbol(name, SymEnum, typ, node) {
+		return
+	}
+	c.env.RegisterEnum(name, typ)
+}
+
+func (c *collector) registerVarLike(name string, kind SymbolKind, typ Type, node *gotreesitter.Node) {
+	if !c.registerSymbol(name, kind, typ, node) {
+		return
+	}
+	if typ != nil {
+		c.env.RegisterVar(name, typ)
+	}
+}
+
+func (c *collector) inferExprType(n *gotreesitter.Node) Type {
+	if n == nil {
+		return nil
+	}
+	switch c.nodeType(n) {
+	case "int_literal":
+		return Primitive("int")
+	case "float_literal":
+		return Primitive("float64")
+	case "interpreted_string_literal", "raw_string_literal":
+		return Primitive("string")
+	case "true", "false":
+		return Primitive("bool")
+	case "rune_literal":
+		return Primitive("rune")
+	case "composite_literal":
+		return parseTypeString(c.text(c.childByField(n, "type")))
+	case "unary_expression":
+		operator := c.childByField(n, "operator")
+		operand := c.childByField(n, "operand")
+		if operator == nil || operand == nil {
+			return nil
+		}
+		if c.text(operator) == "&" {
+			if elem := c.inferExprType(operand); elem != nil {
+				return &PointerType{Elem: elem}
+			}
+		}
+	}
+	return nil
+}
+
 // walkChildren visits all named children of a node.
 func (c *collector) walkChildren(n *gotreesitter.Node) {
+	if c.err != nil || n == nil {
+		return
+	}
 	count := int(n.NamedChildCount())
 	for i := 0; i < count; i++ {
 		child := n.NamedChild(i)
 		c.visitNode(child)
+		if c.err != nil {
+			return
+		}
 	}
 	// Handle top-level type declarations that the FW grammar cannot parse
 	// as proper type_declaration nodes. The pattern is:
@@ -68,6 +223,9 @@ func (c *collector) walkChildren(n *gotreesitter.Node) {
 
 // visitNode dispatches on node type and registers declarations.
 func (c *collector) visitNode(n *gotreesitter.Node) {
+	if c.err != nil || n == nil {
+		return
+	}
 	switch c.nodeType(n) {
 	case "function_declaration":
 		c.collectFunction(n)
@@ -75,6 +233,10 @@ func (c *collector) visitNode(n *gotreesitter.Node) {
 		c.collectTypeDecl(n)
 	case "enum_declaration":
 		c.collectEnum(n)
+	case "var_declaration":
+		c.collectVarDecl(n)
+	case "const_declaration":
+		c.collectConstDecl(n)
 	case "import_declaration":
 		c.collectImport(n)
 	case "impl_block":
@@ -113,11 +275,11 @@ func (c *collector) collectOrphanedTypeDecls(n *gotreesitter.Node) {
 			structNode := c.findStructType(typeNode)
 			if structNode != nil {
 				fields := c.extractStructFields(structNode)
-				c.env.RegisterStruct(name, &StructType{
+				c.registerStruct(name, &StructType{
 					Name:       name,
 					Fields:     fields,
 					Comparable: true,
-				})
+				}, nameNode)
 			}
 		}
 	}
@@ -154,10 +316,10 @@ func (c *collector) collectFunction(n *gotreesitter.Node) {
 	params := c.extractParamTypes(c.childByField(n, "parameters"))
 	results := c.extractResultTypes(c.childByField(n, "result"))
 
-	c.env.RegisterFunc(name, &FuncType{
+	c.registerFunc(name, SymFunc, &FuncType{
 		Params:  params,
 		Results: results,
-	})
+	}, nameNode)
 }
 
 // extractParamTypes walks a parameter_list and extracts the types.
@@ -274,11 +436,11 @@ func (c *collector) collectTypeSpec(n *gotreesitter.Node) {
 
 	if c.nodeType(typeNode) == "struct_type" {
 		fields := c.extractStructFields(typeNode)
-		c.env.RegisterStruct(name, &StructType{
+		c.registerStruct(name, &StructType{
 			Name:       name,
 			Fields:     fields,
 			Comparable: true, // default; refined later by deeper analysis
-		})
+		}, nameNode)
 	}
 	// Other type specs (interfaces, aliases) can be added later
 }
@@ -354,10 +516,10 @@ func (c *collector) collectEnum(n *gotreesitter.Node) {
 		}
 	}
 
-	c.env.RegisterEnum(name, &EnumType{
+	c.registerEnum(name, &EnumType{
 		Name:     name,
 		Variants: variants,
-	})
+	}, nameNode)
 }
 
 func (c *collector) extractVariant(n *gotreesitter.Node) (string, []Type) {
@@ -378,6 +540,58 @@ func (c *collector) extractVariant(n *gotreesitter.Node) (string, []Type) {
 		}
 	}
 	return variantName, types
+}
+
+func (c *collector) collectVarDecl(n *gotreesitter.Node) {
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		spec := n.NamedChild(i)
+		if spec == nil || c.nodeType(spec) != "var_spec" {
+			continue
+		}
+		explicit := parseTypeString(c.text(c.childByField(spec, "type")))
+		value := c.childByField(spec, "value")
+		inferred := c.inferExprType(value)
+		for j := 0; j < int(spec.ChildCount()); j++ {
+			if spec.FieldNameForChild(j, c.lang) != "name" {
+				continue
+			}
+			nameNode := spec.Child(j)
+			if nameNode == nil {
+				continue
+			}
+			typ := explicit
+			if typ == nil {
+				typ = inferred
+			}
+			c.registerVarLike(c.text(nameNode), SymVar, typ, nameNode)
+		}
+	}
+}
+
+func (c *collector) collectConstDecl(n *gotreesitter.Node) {
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		spec := n.NamedChild(i)
+		if spec == nil || c.nodeType(spec) != "const_spec" {
+			continue
+		}
+		explicit := parseTypeString(c.text(c.childByField(spec, "type")))
+		value := c.childByField(spec, "value")
+		inferred := c.inferExprType(value)
+		for j := 0; j < int(spec.ChildCount()); j++ {
+			if spec.FieldNameForChild(j, c.lang) != "name" {
+				continue
+			}
+			nameNode := spec.Child(j)
+			if nameNode == nil {
+				continue
+			}
+			typ := explicit
+			if typ == nil {
+				typ = inferred
+			}
+			c.registerVarLike(c.text(nameNode), SymConst, typ, nameNode)
+		}
+	}
 }
 
 // collectImport records import paths for later resolution.
@@ -476,10 +690,10 @@ func (c *collector) walkForImplMethods(n *gotreesitter.Node, receiverType string
 			name := c.text(nameNode)
 			params := c.extractParamTypes(c.childByField(child, "parameters"))
 			results := c.extractResultTypes(c.childByField(child, "result"))
-			c.env.RegisterFunc(receiverType+"."+name, &FuncType{
+			c.registerFunc(receiverType+"."+name, SymImpl, &FuncType{
 				Params:  params,
 				Results: results,
-			})
+			}, nameNode)
 		} else if nt == "func_literal" {
 			// Inside impl blocks, "func getX() float64 { ... }" parses as a
 			// func_literal. The method name appears in the source text between
@@ -529,10 +743,10 @@ func (c *collector) collectFuncLiteralAsMethod(n *gotreesitter.Node, receiverTyp
 		}
 	}
 
-	c.env.RegisterFunc(receiverType+"."+name, &FuncType{
+	c.registerFunc(receiverType+"."+name, SymImpl, &FuncType{
 		Params:  params,
 		Results: results,
-	})
+	}, n)
 }
 
 // parseTypeString converts a type name string from the CST into a Type.
@@ -587,6 +801,101 @@ func parseTypeString(s string) Type {
 		return &ChanType{Elem: parseTypeString(s[4:]), Dir: ChanBidi}
 	}
 
-	// Everything else is a primitive or named type
-	return Primitive(s)
+	if base, args, ok := splitGenericTypeString(s); ok {
+		typeArgs := make([]Type, 0, len(args))
+		for _, arg := range args {
+			typeArgs = append(typeArgs, parseTypeString(arg))
+		}
+		return &GenericType{Name: base, TypeParams: typeArgs}
+	}
+
+	if pkg, name, ok := splitQualifiedTypeString(s); ok {
+		return &NamedType{Pkg: pkg, Name: name}
+	}
+
+	if isBuiltinTypeName(s) {
+		return Primitive(s)
+	}
+
+	return &NamedType{Name: s}
+}
+
+func isBuiltinTypeName(s string) bool {
+	switch s {
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"float32", "float64", "byte", "rune", "uintptr",
+		"string", "bool", "error", "any":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitQualifiedTypeString(s string) (pkg string, name string, ok bool) {
+	idx := strings.LastIndexByte(s, '.')
+	if idx <= 0 || idx >= len(s)-1 {
+		return "", "", false
+	}
+	if strings.ContainsAny(s[:idx], "[]*(){} ,") || strings.ContainsAny(s[idx+1:], "[]*(){} ,") {
+		return "", "", false
+	}
+	return s[:idx], s[idx+1:], true
+}
+
+func splitGenericTypeString(s string) (base string, args []string, ok bool) {
+	start := strings.IndexByte(s, '[')
+	if start <= 0 || !strings.HasSuffix(s, "]") {
+		return "", nil, false
+	}
+
+	depth := 0
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				if i != len(s)-1 {
+					return "", nil, false
+				}
+				typeArgs := splitTopLevelTypeArgs(s[start+1 : i])
+				if len(typeArgs) == 0 {
+					return "", nil, false
+				}
+				return strings.TrimSpace(s[:start]), typeArgs, true
+			}
+		}
+	}
+	return "", nil, false
+}
+
+func splitTopLevelTypeArgs(s string) []string {
+	var (
+		args  []string
+		start int
+		depth int
+	)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				arg := strings.TrimSpace(s[start:i])
+				if arg != "" {
+					args = append(args, arg)
+				}
+				start = i + 1
+			}
+		}
+	}
+	last := strings.TrimSpace(s[start:])
+	if last != "" {
+		args = append(args, last)
+	}
+	return args
 }

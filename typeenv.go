@@ -2,6 +2,35 @@ package ferrouswheel
 
 import "fmt"
 
+// SymbolKind identifies a top-level symbol category for editor features.
+type SymbolKind int
+
+const (
+	SymFunc SymbolKind = iota
+	SymStruct
+	SymEnum
+	SymVar
+	SymConst
+	SymImpl
+)
+
+// SourceRange tracks a symbol's origin in source.
+type SourceRange struct {
+	File     string
+	StartRow int
+	StartCol int
+	EndRow   int
+	EndCol   int
+}
+
+// SymbolInfo describes a top-level declaration collected from source.
+type SymbolInfo struct {
+	Name     string
+	Kind     SymbolKind
+	Type     Type
+	Location SourceRange
+}
+
 // Scope holds variable bindings for a lexical scope.
 type Scope struct {
 	vars   map[string]Type
@@ -32,6 +61,8 @@ type TypeEnv struct {
 	enums         map[string]*EnumType
 	imports       map[string]ImportScope // alias -> exported types
 	importPathMap map[string]string      // alias -> full import path
+	symbols       []SymbolInfo
+	symbolIndex   map[string]int
 	filename      string
 }
 
@@ -50,11 +81,12 @@ func NewTypeEnv() *TypeEnv {
 		enums:         make(map[string]*EnumType),
 		imports:       make(map[string]ImportScope),
 		importPathMap: make(map[string]string),
+		symbolIndex:   make(map[string]int),
 	}
 }
 
-func (e *TypeEnv) PushScope()                      { e.scope = newScope(e.scope) }
-func (e *TypeEnv) PopScope()                        { e.scope = e.scope.parent }
+func (e *TypeEnv) PushScope()                        { e.scope = newScope(e.scope) }
+func (e *TypeEnv) PopScope()                         { e.scope = e.scope.parent }
 func (e *TypeEnv) RegisterVar(name string, typ Type) { e.scope.set(name, typ) }
 
 func (e *TypeEnv) LookupVar(name string) (Type, error) {
@@ -116,11 +148,227 @@ func (e *TypeEnv) Enums() map[string]*EnumType { return e.enums }
 // Imports returns the import scopes.
 func (e *TypeEnv) Imports() map[string]ImportScope { return e.imports }
 
+// Symbols returns the collected top-level symbols.
+func (e *TypeEnv) Symbols() []SymbolInfo {
+	out := make([]SymbolInfo, len(e.symbols))
+	copy(out, e.symbols)
+	return out
+}
+
+// FindSymbol returns the first symbol with the given name.
+func (e *TypeEnv) FindSymbol(name string) (SymbolInfo, bool) {
+	for _, symbol := range e.symbols {
+		if symbol.Name == name {
+			return symbol, true
+		}
+	}
+	return SymbolInfo{}, false
+}
+
+// FindFileSymbols returns all symbols declared in the given source file.
+func (e *TypeEnv) FindFileSymbols(file string) []SymbolInfo {
+	var out []SymbolInfo
+	for _, symbol := range e.symbols {
+		if symbol.Location.File == file {
+			out = append(out, symbol)
+		}
+	}
+	return out
+}
+
 // importPaths returns the full import paths collected during type collection.
 func (e *TypeEnv) importPaths() []string {
+	seen := make(map[string]struct{}, len(e.importPathMap))
 	paths := make([]string, 0, len(e.importPathMap))
 	for _, p := range e.importPathMap {
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
 		paths = append(paths, p)
 	}
 	return paths
+}
+
+// LoadCollectedImports loads the packages referenced by collected import specs.
+func (e *TypeEnv) LoadCollectedImports(moduleDir string) error {
+	return e.LoadImports(e.importPaths(), moduleDir)
+}
+
+func (e *TypeEnv) bindNamedTypes() {
+	for name, fn := range e.funcs {
+		e.funcs[name] = e.bindType(fn).(*FuncType)
+	}
+	for _, st := range e.structs {
+		for fieldName, fieldType := range st.Fields {
+			st.Fields[fieldName] = e.bindType(fieldType)
+		}
+	}
+	for _, en := range e.enums {
+		for variant, payloads := range en.Variants {
+			for i, payload := range payloads {
+				payloads[i] = e.bindType(payload)
+			}
+			en.Variants[variant] = payloads
+		}
+	}
+}
+
+func cloneScope(scope *Scope) *Scope {
+	if scope == nil {
+		return nil
+	}
+	cloned := &Scope{
+		vars:   make(map[string]Type, len(scope.vars)),
+		parent: cloneScope(scope.parent),
+	}
+	for name, typ := range scope.vars {
+		cloned.vars[name] = typ
+	}
+	return cloned
+}
+
+// Clone returns a shallow copy of the type environment with an independent scope stack.
+func (e *TypeEnv) Clone() *TypeEnv {
+	if e == nil {
+		return nil
+	}
+	cloned := &TypeEnv{
+		scope:         cloneScope(e.scope),
+		funcs:         make(map[string]*FuncType, len(e.funcs)),
+		structs:       make(map[string]*StructType, len(e.structs)),
+		enums:         make(map[string]*EnumType, len(e.enums)),
+		imports:       make(map[string]ImportScope, len(e.imports)),
+		importPathMap: make(map[string]string, len(e.importPathMap)),
+		symbols:       make([]SymbolInfo, len(e.symbols)),
+		symbolIndex:   make(map[string]int, len(e.symbolIndex)),
+		filename:      e.filename,
+	}
+	for name, fn := range e.funcs {
+		cloned.funcs[name] = fn
+	}
+	for name, st := range e.structs {
+		cloned.structs[name] = st
+	}
+	for name, enum := range e.enums {
+		cloned.enums[name] = enum
+	}
+	for name, imp := range e.imports {
+		cloned.imports[name] = imp
+	}
+	for name, path := range e.importPathMap {
+		cloned.importPathMap[name] = path
+	}
+	copy(cloned.symbols, e.symbols)
+	for key, idx := range e.symbolIndex {
+		cloned.symbolIndex[key] = idx
+	}
+	return cloned
+}
+
+func (e *TypeEnv) registerSymbol(symbol SymbolInfo) error {
+	if symbol.Name == "" {
+		return nil
+	}
+	if idx, ok := e.symbolIndex[symbol.Name]; ok {
+		existing := e.symbols[idx]
+		return fmt.Errorf(
+			"%s '%s' declared in both %s (line %d) and %s (line %d)",
+			symbolKindLabel(symbol.Kind),
+			symbol.Name,
+			locationLabel(existing.Location.File),
+			existing.Location.StartRow+1,
+			locationLabel(symbol.Location.File),
+			symbol.Location.StartRow+1,
+		)
+	}
+	e.symbolIndex[symbol.Name] = len(e.symbols)
+	e.symbols = append(e.symbols, symbol)
+	return nil
+}
+
+func symbolKindLabel(kind SymbolKind) string {
+	switch kind {
+	case SymFunc:
+		return "function"
+	case SymStruct:
+		return "struct"
+	case SymEnum:
+		return "enum"
+	case SymVar:
+		return "var"
+	case SymConst:
+		return "const"
+	case SymImpl:
+		return "method"
+	default:
+		return "symbol"
+	}
+}
+
+func locationLabel(file string) string {
+	if file == "" {
+		return "<unknown>"
+	}
+	return file
+}
+
+func (e *TypeEnv) bindType(typ Type) Type {
+	switch t := typ.(type) {
+	case nil, Primitive, *StructType, *EnumType, *InterfaceType, *UntypedConstType, *UnresolvedType, *TypeParamType:
+		return typ
+	case *PointerType:
+		t.Elem = e.bindType(t.Elem)
+		return t
+	case *SliceType:
+		t.Elem = e.bindType(t.Elem)
+		return t
+	case *MapType:
+		t.Key = e.bindType(t.Key)
+		t.Value = e.bindType(t.Value)
+		return t
+	case *ChanType:
+		t.Elem = e.bindType(t.Elem)
+		return t
+	case *FuncType:
+		for i, param := range t.Params {
+			t.Params[i] = e.bindType(param)
+		}
+		for i, result := range t.Results {
+			t.Results[i] = e.bindType(result)
+		}
+		return t
+	case *TupleType:
+		for i, elem := range t.Elems {
+			t.Elems[i] = e.bindType(elem)
+		}
+		return t
+	case *GenericType:
+		for i, arg := range t.TypeParams {
+			t.TypeParams[i] = e.bindType(arg)
+		}
+		return t
+	case *NamedType:
+		if t.Underlying != nil {
+			t.Underlying = e.bindType(t.Underlying)
+			return t
+		}
+		if t.Pkg != "" {
+			if imported, err := e.LookupImportedType(t.Pkg, t.Name); err == nil {
+				return imported
+			}
+			return t
+		}
+		if st, err := e.LookupStruct(t.Name); err == nil {
+			t.Underlying = st
+			return t
+		}
+		if en, err := e.LookupEnum(t.Name); err == nil {
+			t.Underlying = en
+			return t
+		}
+		return t
+	default:
+		return typ
+	}
 }

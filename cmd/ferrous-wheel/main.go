@@ -120,18 +120,28 @@ func buildArgs(args []string) (string, string, error) {
 }
 
 // transpileFile reads a .fw file and returns the generated Go source.
-func transpileFile(path string) (string, error) {
+func transpileFile(path string) (string, []ferrouswheel.Warning, error) {
 	source, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", path, err)
+		return "", nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	goCode, err := ferrouswheel.TranspileWithOptions(source, ferrouswheel.TranspileOptions{
-		SourceFile: filepath.Base(path),
+	goCode, warnings, err := ferrouswheel.TranspileWithOptions(source, ferrouswheel.TranspileOptions{
+		SourceFile: path,
 	})
 	if err != nil {
-		return "", fmt.Errorf("transpile %s: %w", path, err)
+		return "", nil, fmt.Errorf("transpile %s: %w", path, err)
 	}
-	return generatedHeader + goCode, nil
+	return generatedHeader + goCode, warnings, nil
+}
+
+func printWarnings(w io.Writer, warnings []ferrouswheel.Warning) {
+	for _, warning := range warnings {
+		if warning.Line > 0 {
+			fmt.Fprintf(w, "warning: line %d:%d: %s\n", warning.Line, warning.Col, warning.Message)
+			continue
+		}
+		fmt.Fprintf(w, "warning: %s\n", warning.Message)
+	}
 }
 
 // writeTempProject writes Go source + go.mod to a temp directory and returns the path.
@@ -156,10 +166,11 @@ func writeTempProject(goCode string) (string, func(), error) {
 
 // run transpiles a .fw file and executes it immediately.
 func run(path string) error {
-	goCode, err := transpileFile(path)
+	goCode, warnings, err := transpileFile(path)
 	if err != nil {
 		return err
 	}
+	printWarnings(os.Stderr, warnings)
 
 	tmpDir, cleanup, err := writeTempProject(goCode)
 	if err != nil {
@@ -181,10 +192,11 @@ func run(path string) error {
 
 // build transpiles a .fw file and compiles it to a native binary.
 func build(path, output string) error {
-	goCode, err := transpileFile(path)
+	goCode, warnings, err := transpileFile(path)
 	if err != nil {
 		return err
 	}
+	printWarnings(os.Stderr, warnings)
 
 	tmpDir, cleanup, err := writeTempProject(goCode)
 	if err != nil {
@@ -223,10 +235,11 @@ func build(path, output string) error {
 
 // emit transpiles a .fw file and prints the generated Go to stdout.
 func emit(path string) error {
-	goCode, err := transpileFile(path)
+	goCode, warnings, err := transpileFile(path)
 	if err != nil {
 		return err
 	}
+	printWarnings(os.Stderr, warnings)
 	fmt.Print(goCode)
 	return nil
 }

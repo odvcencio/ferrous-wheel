@@ -101,7 +101,14 @@ func (e *TypeEnv) Resolve(n *gotreesitter.Node, lang *gotreesitter.Language, src
 
 	// --- Identifiers ---
 	case "identifier":
-		return e.LookupVar(text(n))
+		name := text(n)
+		if typ, err := e.LookupVar(name); err == nil {
+			return typ, nil
+		}
+		if fn, err := e.LookupFunc(name); err == nil {
+			return fn, nil
+		}
+		return nil, fmt.Errorf("undefined identifier: %s", name)
 
 	// --- Let bindings ---
 	case "let_declaration":
@@ -143,6 +150,40 @@ func (e *TypeEnv) Resolve(n *gotreesitter.Node, lang *gotreesitter.Language, src
 			return &TupleType{Elems: ft.Results}, nil
 		}
 
+	case "composite_literal":
+		typeNode := field("type")
+		if typeNode == nil {
+			return nil, fmt.Errorf("composite literal has no type")
+		}
+		return e.resolveTypeExpr(typeNode, lang, src)
+
+	case "unary_expression":
+		operator := field("operator")
+		operand := field("operand")
+		if operator == nil || operand == nil {
+			return nil, fmt.Errorf("unary expression incomplete")
+		}
+		operandType, err := e.Resolve(operand, lang, src)
+		if err != nil {
+			return nil, err
+		}
+		switch text(operator) {
+		case "&":
+			return &PointerType{Elem: operandType}, nil
+		case "*":
+			if ptr, ok := operandType.(*PointerType); ok {
+				return ptr.Elem, nil
+			}
+			return nil, fmt.Errorf("cannot dereference %s", operandType)
+		case "<-":
+			if ch, ok := operandType.(*ChanType); ok {
+				return ch.Elem, nil
+			}
+			return nil, fmt.Errorf("cannot receive from %s", operandType)
+		default:
+			return operandType, nil
+		}
+
 	// --- Selector (pkg.Func or obj.Field) ---
 	case "selector_expression":
 		operand := field("operand")
@@ -156,6 +197,9 @@ func (e *TypeEnv) Resolve(n *gotreesitter.Node, lang *gotreesitter.Language, src
 				return fn, nil
 			}
 			if typ, err := e.LookupImportedType(pkgName, text(sel)); err == nil {
+				return typ, nil
+			}
+			if typ, err := e.LookupImportedVar(pkgName, text(sel)); err == nil {
 				return typ, nil
 			}
 		}
@@ -364,6 +408,9 @@ func (e *TypeEnv) ResolveFieldAccess(objType Type, fieldName string) (Type, erro
 		objType = ptr.Elem
 	}
 	if named, ok := objType.(*NamedType); ok {
+		if named.Underlying == nil {
+			return nil, fmt.Errorf("cannot access field %s on unresolved named type %s", fieldName, named.String())
+		}
 		objType = named.Underlying
 	}
 	switch t := objType.(type) {
@@ -379,19 +426,114 @@ func (e *TypeEnv) ResolveFieldAccess(objType Type, fieldName string) (Type, erro
 
 // resolveTypeExpr converts a CST type node to a Type.
 func (e *TypeEnv) resolveTypeExpr(n *gotreesitter.Node, lang *gotreesitter.Language, src []byte) (Type, error) {
+	if n == nil {
+		return nil, fmt.Errorf("nil type expression")
+	}
+
 	text := string(src[n.StartByte():n.EndByte()])
-	if st, err := e.LookupStruct(text); err == nil {
-		return st, nil
+	field := func(node *gotreesitter.Node, name string) *gotreesitter.Node {
+		return node.ChildByFieldName(name, lang)
 	}
-	if en, err := e.LookupEnum(text); err == nil {
-		return en, nil
+
+	switch n.Type(lang) {
+	case "type_identifier", "identifier":
+		if isBuiltinTypeName(text) {
+			return Primitive(text), nil
+		}
+		if st, err := e.LookupStruct(text); err == nil {
+			return &NamedType{Name: text, Underlying: st}, nil
+		}
+		if en, err := e.LookupEnum(text); err == nil {
+			return &NamedType{Name: text, Underlying: en}, nil
+		}
+		return &NamedType{Name: text}, nil
+	case "qualified_type":
+		pkgNode := field(n, "package")
+		nameNode := field(n, "name")
+		if pkgNode == nil || nameNode == nil {
+			break
+		}
+		pkg := string(src[pkgNode.StartByte():pkgNode.EndByte()])
+		name := string(src[nameNode.StartByte():nameNode.EndByte()])
+		if typ, err := e.LookupImportedType(pkg, name); err == nil {
+			return typ, nil
+		}
+		return &NamedType{Pkg: pkg, Name: name}, nil
+	case "pointer_type":
+		elem := n.NamedChild(0)
+		if elem == nil {
+			break
+		}
+		elemType, err := e.resolveTypeExpr(elem, lang, src)
+		if err != nil {
+			return nil, err
+		}
+		return &PointerType{Elem: elemType}, nil
+	case "slice_type":
+		elem := field(n, "element")
+		if elem == nil {
+			break
+		}
+		elemType, err := e.resolveTypeExpr(elem, lang, src)
+		if err != nil {
+			return nil, err
+		}
+		return &SliceType{Elem: elemType}, nil
+	case "map_type":
+		keyNode := field(n, "key")
+		valueNode := field(n, "value")
+		if keyNode == nil || valueNode == nil {
+			break
+		}
+		keyType, err := e.resolveTypeExpr(keyNode, lang, src)
+		if err != nil {
+			return nil, err
+		}
+		valueType, err := e.resolveTypeExpr(valueNode, lang, src)
+		if err != nil {
+			return nil, err
+		}
+		return &MapType{Key: keyType, Value: valueType}, nil
+	case "channel_type":
+		valueNode := field(n, "value")
+		if valueNode == nil {
+			break
+		}
+		valueType, err := e.resolveTypeExpr(valueNode, lang, src)
+		if err != nil {
+			return nil, err
+		}
+		dir := ChanBidi
+		switch {
+		case len(text) >= 2 && text[:2] == "<-":
+			dir = ChanRecv
+		case len(text) >= 6 && text[:6] == "chan<-":
+			dir = ChanSend
+		}
+		return &ChanType{Elem: valueType, Dir: dir}, nil
+	case "generic_type":
+		baseNode := field(n, "type")
+		typeArgsNode := field(n, "type_arguments")
+		if baseNode == nil || typeArgsNode == nil {
+			break
+		}
+		typeArgs := make([]Type, 0, int(typeArgsNode.NamedChildCount()))
+		for i := 0; i < int(typeArgsNode.NamedChildCount()); i++ {
+			argNode := typeArgsNode.NamedChild(i)
+			argType, err := e.resolveTypeExpr(argNode, lang, src)
+			if err != nil {
+				return nil, err
+			}
+			typeArgs = append(typeArgs, argType)
+		}
+		return &GenericType{
+			Name:       string(src[baseNode.StartByte():baseNode.EndByte()]),
+			TypeParams: typeArgs,
+		}, nil
 	}
-	switch text {
-	case "int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64",
-		"float32", "float64", "byte", "rune", "uintptr",
-		"string", "bool", "error", "any":
-		return Primitive(text), nil
+
+	if parsed := parseTypeString(text); parsed != nil {
+		return e.bindType(parsed), nil
 	}
 	return nil, fmt.Errorf("unknown type: %s", text)
 }

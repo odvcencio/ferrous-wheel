@@ -65,8 +65,11 @@ func (t *fwTranspiler) emitSelectBlock(n *gotreesitter.Node) string {
 
 		switch {
 		case varNode != nil && chanNode != nil:
+			bodyText := t.emitScopedNode(bodyNode, func() {
+				t.registerBinding(t.text(varNode), t.channelElemType(chanNode))
+			})
 			fmt.Fprintf(&b, "case %s := <-%s:\n\t%s\n",
-				t.text(varNode), t.emit(chanNode), t.emit(bodyNode))
+				t.text(varNode), t.emit(chanNode), bodyText)
 		case durNode != nil:
 			t.needsTime = true
 			fmt.Fprintf(&b, "case <-time.After(%s):\n\t%s\n",

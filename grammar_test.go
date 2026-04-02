@@ -829,6 +829,23 @@ func f() {
 	}
 }
 
+func TestMmapWritableBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	mmap file "data.bin" writable as data []byte {
+		_ = data
+	}
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "mmap_block") {
+		t.Error("expected mmap_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
 func TestPackedAnnotation(t *testing.T) {
 	sexp := parseFW(t, `package main
 func f() {

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	ferrouswheel "github.com/odvcencio/ferrous-wheel"
 )
 
 func writeFWFile(t *testing.T, dir, name, source string) string {
@@ -70,9 +72,12 @@ func main() {
 }
 `)
 
-	got, err := transpileFile(fw)
+	got, warnings, err := transpileFile(fw)
 	if err != nil {
 		t.Fatalf("transpileFile: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %+v", warnings)
 	}
 	if !strings.HasPrefix(got, generatedHeader) {
 		t.Fatalf("expected generated header, got:\n%s", got)
@@ -200,6 +205,42 @@ func main() {
 	}
 	if !strings.Contains(stdout, "x := 42") {
 		t.Fatalf("expected transpiled code, got:\n%s", stdout)
+	}
+}
+
+func TestEmitPrintsWarningsToStderr(t *testing.T) {
+	fw := writeFWFile(t, t.TempDir(), "warn.fw", `package main
+
+func main() {
+	fallback := fn(v) v ?? "fallback"
+	_ = fallback
+}
+`)
+
+	stdout, stderr, err := captureOutput(t, func() error { return emit(fw) })
+	if err != nil {
+		t.Fatalf("emit: %v\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "warning: line 4:") {
+		t.Fatalf("expected warning location on stderr, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "using reflection fallback") {
+		t.Fatalf("expected warning message on stderr, got %q", stderr)
+	}
+	if !strings.Contains(stdout, "// fw:warn:") {
+		t.Fatalf("expected inline warning comment in output, got:\n%s", stdout)
+	}
+}
+
+func TestPrintWarningsFormatsLineAndColumn(t *testing.T) {
+	var buf bytes.Buffer
+	printWarnings(&buf, []ferrouswheel.Warning{{
+		Line:    12,
+		Col:     7,
+		Message: "type of 'user' unresolved for ?. - using reflection fallback",
+	}})
+	if got := buf.String(); got != "warning: line 12:7: type of 'user' unresolved for ?. - using reflection fallback\n" {
+		t.Fatalf("unexpected warning output %q", got)
 	}
 }
 

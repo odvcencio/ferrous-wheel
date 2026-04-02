@@ -98,9 +98,14 @@ func (t *fwTranspiler) emitMmap(n *gotreesitter.Node) string {
 	pathStr := t.text(pathNode)
 	name := t.text(nameNode)
 	block := t.findBlock(n)
+	writable := t.childByField(n, "writable") != nil
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "_f, _fwMmapErr := os.Open(%s)\n", pathStr)
+	if writable {
+		fmt.Fprintf(&b, "_f, _fwMmapErr := os.OpenFile(%s, os.O_RDWR, 0)\n", pathStr)
+	} else {
+		fmt.Fprintf(&b, "_f, _fwMmapErr := os.Open(%s)\n", pathStr)
+	}
 	b.WriteString("if _fwMmapErr != nil {\n\tpanic(_fwMmapErr)\n}\n")
 	b.WriteString("defer _f.Close()\n")
 	b.WriteString("_fi, _fwMmapErr := _f.Stat()\n")
@@ -110,7 +115,11 @@ func (t *fwTranspiler) emitMmap(n *gotreesitter.Node) string {
 	b.WriteString("if _fwMmapSize > int64(int(^uint(0)>>1)) {\n\tpanic(\"mmap file too large\")\n}\n")
 	fmt.Fprintf(&b, "var %s []byte\n", name)
 	b.WriteString("if _fwMmapSize > 0 {\n")
-	fmt.Fprintf(&b, "\t%s, _fwMmapErr = syscall.Mmap(int(_f.Fd()), 0, int(_fwMmapSize), syscall.PROT_READ, syscall.MAP_SHARED)\n", name)
+	if writable {
+		fmt.Fprintf(&b, "\t%s, _fwMmapErr = syscall.Mmap(int(_f.Fd()), 0, int(_fwMmapSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)\n", name)
+	} else {
+		fmt.Fprintf(&b, "\t%s, _fwMmapErr = syscall.Mmap(int(_f.Fd()), 0, int(_fwMmapSize), syscall.PROT_READ, syscall.MAP_SHARED)\n", name)
+	}
 	b.WriteString("\tif _fwMmapErr != nil {\n\t\tpanic(_fwMmapErr)\n\t}\n")
 	fmt.Fprintf(&b, "\tdefer func() {\n\t\tif _fwMmapErr := syscall.Munmap(%s); _fwMmapErr != nil {\n\t\t\tpanic(_fwMmapErr)\n\t\t}\n\t}()\n", name)
 	b.WriteString("}\n")
@@ -124,7 +133,101 @@ func (t *fwTranspiler) emitPacked(n *gotreesitter.Node) string {
 	if decl == nil {
 		return t.text(n)
 	}
-	return "// packed: manual alignment required\n" + t.emit(decl)
+	out := "// packed: manual alignment required\n" + t.emit(decl)
+	if n.Parent() == nil || n.Parent().Type(t.lang) != "source_file" {
+		return out
+	}
+	name, size, ok := t.packedStructInfo(decl)
+	if !ok {
+		return out
+	}
+	t.needsUnsafe = true
+	t.needsFmt = true
+	return out + fmt.Sprintf(`
+func init() {
+	if sz := unsafe.Sizeof(%s{}); sz != %d {
+		panic(fmt.Sprintf("packed struct %s: expected size %d, got %%d - check field alignment", sz))
+	}
+}
+`, name, size, name, size)
+}
+
+func (t *fwTranspiler) packedStructInfo(decl *gotreesitter.Node) (string, int, bool) {
+	if decl == nil {
+		return "", 0, false
+	}
+	switch decl.Type(t.lang) {
+	case "type_declaration":
+		for i := 0; i < int(decl.NamedChildCount()); i++ {
+			child := decl.NamedChild(i)
+			if child != nil && child.Type(t.lang) == "type_spec" {
+				return t.packedStructInfo(child)
+			}
+		}
+	case "type_spec":
+		nameNode := t.childByField(decl, "name")
+		typeNode := t.childByField(decl, "type")
+		if nameNode == nil || typeNode == nil || typeNode.Type(t.lang) != "struct_type" {
+			return "", 0, false
+		}
+		size, ok := t.packedStructSize(typeNode)
+		if !ok {
+			return "", 0, false
+		}
+		return t.text(nameNode), size, true
+	}
+	return "", 0, false
+}
+
+func (t *fwTranspiler) packedStructSize(structNode *gotreesitter.Node) (int, bool) {
+	if structNode == nil {
+		return 0, false
+	}
+	total := 0
+	for i := 0; i < int(structNode.NamedChildCount()); i++ {
+		child := structNode.NamedChild(i)
+		if child == nil || child.Type(t.lang) != "field_declaration_list" {
+			continue
+		}
+		for j := 0; j < int(child.NamedChildCount()); j++ {
+			field := child.NamedChild(j)
+			if field == nil || field.Type(t.lang) != "field_declaration" {
+				continue
+			}
+			typeNode := t.childByField(field, "type")
+			fieldSize, ok := packedFieldSize(t.text(typeNode))
+			if !ok {
+				return 0, false
+			}
+			count := 0
+			for k := 0; k < int(field.NamedChildCount()); k++ {
+				if named := field.NamedChild(k); named != nil && named.Type(t.lang) == "field_identifier" {
+					count++
+				}
+			}
+			if count == 0 {
+				return 0, false
+			}
+			total += fieldSize * count
+		}
+		return total, true
+	}
+	return 0, false
+}
+
+func packedFieldSize(typeName string) (int, bool) {
+	switch strings.TrimSpace(typeName) {
+	case "bool", "byte", "int8", "uint8":
+		return 1, true
+	case "int16", "uint16":
+		return 2, true
+	case "float32", "int32", "rune", "uint32":
+		return 4, true
+	case "float64", "int64", "uint64":
+		return 8, true
+	default:
+		return 0, false
+	}
 }
 
 // vectorize for v in items { body } -> for loop with vectorize hint comment

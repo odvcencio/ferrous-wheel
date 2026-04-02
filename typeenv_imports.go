@@ -33,9 +33,115 @@ func (e *TypeEnv) LoadImports(paths []string, moduleDir string) error {
 		if pkg.Types == nil {
 			continue
 		}
-		e.imports[pkg.Name] = buildImportScope(pkg.Types)
+		scope := buildImportScope(pkg.Types)
+		e.imports[pkg.Name] = scope
+		if _, ok := e.importPathMap[pkg.Name]; !ok {
+			e.importPathMap[pkg.Name] = pkg.PkgPath
+		}
+		for alias, path := range e.importPathMap {
+			if path == pkg.PkgPath {
+				if alias == pkg.Name {
+					e.imports[alias] = scope
+					continue
+				}
+				e.imports[alias] = importScopeWithAlias(scope, alias)
+			}
+		}
 	}
+	e.bindNamedTypes()
 	return nil
+}
+
+func importScopeWithAlias(scope ImportScope, alias string) ImportScope {
+	aliased := ImportScope{
+		Funcs: make(map[string]*FuncType, len(scope.Funcs)),
+		Types: make(map[string]Type, len(scope.Types)),
+		Vars:  make(map[string]Type, len(scope.Vars)),
+	}
+	for name, fn := range scope.Funcs {
+		aliased.Funcs[name] = importTypeWithAlias(fn, alias).(*FuncType)
+	}
+	for name, typ := range scope.Types {
+		aliased.Types[name] = importTypeWithAlias(typ, alias)
+	}
+	for name, typ := range scope.Vars {
+		aliased.Vars[name] = importTypeWithAlias(typ, alias)
+	}
+	return aliased
+}
+
+func importTypeWithAlias(typ Type, alias string) Type {
+	switch t := typ.(type) {
+	case nil, Primitive, *UntypedConstType, *UnresolvedType, *TypeParamType:
+		return typ
+	case *PointerType:
+		return &PointerType{Elem: importTypeWithAlias(t.Elem, alias)}
+	case *SliceType:
+		return &SliceType{Elem: importTypeWithAlias(t.Elem, alias)}
+	case *MapType:
+		return &MapType{
+			Key:   importTypeWithAlias(t.Key, alias),
+			Value: importTypeWithAlias(t.Value, alias),
+		}
+	case *ChanType:
+		return &ChanType{Elem: importTypeWithAlias(t.Elem, alias), Dir: t.Dir}
+	case *FuncType:
+		params := make([]Type, 0, len(t.Params))
+		for _, param := range t.Params {
+			params = append(params, importTypeWithAlias(param, alias))
+		}
+		results := make([]Type, 0, len(t.Results))
+		for _, result := range t.Results {
+			results = append(results, importTypeWithAlias(result, alias))
+		}
+		return &FuncType{Params: params, Results: results}
+	case *TupleType:
+		elems := make([]Type, 0, len(t.Elems))
+		for _, elem := range t.Elems {
+			elems = append(elems, importTypeWithAlias(elem, alias))
+		}
+		return &TupleType{Elems: elems}
+	case *StructType:
+		fields := make(map[string]Type, len(t.Fields))
+		for name, fieldType := range t.Fields {
+			fields[name] = importTypeWithAlias(fieldType, alias)
+		}
+		return &StructType{Name: t.Name, Fields: fields, Comparable: t.Comparable}
+	case *InterfaceType:
+		methods := make(map[string]*FuncType, len(t.Methods))
+		for name, method := range t.Methods {
+			methods[name] = importTypeWithAlias(method, alias).(*FuncType)
+		}
+		return &InterfaceType{Name: t.Name, Methods: methods}
+	case *EnumType:
+		variants := make(map[string][]Type, len(t.Variants))
+		for name, payloads := range t.Variants {
+			copied := make([]Type, 0, len(payloads))
+			for _, payload := range payloads {
+				copied = append(copied, importTypeWithAlias(payload, alias))
+			}
+			variants[name] = copied
+		}
+		return &EnumType{Name: t.Name, Variants: variants}
+	case *GenericType:
+		args := make([]Type, 0, len(t.TypeParams))
+		for _, arg := range t.TypeParams {
+			args = append(args, importTypeWithAlias(arg, alias))
+		}
+		return &GenericType{Name: t.Name, TypeParams: args}
+	case *NamedType:
+		pkg := t.Pkg
+		if pkg != "" {
+			pkg = alias
+		}
+		clone := &NamedType{Pkg: pkg, Name: t.Name}
+		if t.Underlying != nil {
+			clone.Underlying = importTypeWithAlias(t.Underlying, alias)
+		}
+		return clone
+	default:
+		return typ
+	}
 }
 
 func buildImportScope(pkg *types.Package) ImportScope {
@@ -88,6 +194,19 @@ func (e *TypeEnv) LookupImportedType(pkg, name string) (Type, error) {
 	return typ, nil
 }
 
+// LookupImportedVar resolves a package-level variable or const from a loaded import.
+func (e *TypeEnv) LookupImportedVar(pkg, name string) (Type, error) {
+	imp, ok := e.imports[pkg]
+	if !ok {
+		return nil, fmt.Errorf("package %s not loaded", pkg)
+	}
+	typ, ok := imp.Vars[name]
+	if !ok {
+		return nil, fmt.Errorf("%s.%s not found", pkg, name)
+	}
+	return typ, nil
+}
+
 // fromGoType converts a go/types.Type to our Type interface.
 // CRITICAL: Must check for *types.Named BEFORE calling .Underlying()
 // to preserve named type info (e.g., os.File stays as NamedType).
@@ -96,21 +215,20 @@ func fromGoType(t types.Type) Type {
 }
 
 func fromGoTypeWith(t types.Type, seen map[types.Type]bool) Type {
-	if seen[t] {
-		// Break infinite recursion for self-referential types
-		if named, ok := t.(*types.Named); ok {
+	if basic, ok := t.(*types.Basic); ok {
+		return Primitive(basic.Name())
+	}
+
+	// Preserve named type information before unwrapping
+	if named, ok := t.(*types.Named); ok {
+		if seen[t] {
 			pkg := ""
 			if named.Obj().Pkg() != nil {
 				pkg = named.Obj().Pkg().Name()
 			}
 			return &NamedType{Pkg: pkg, Name: named.Obj().Name()}
 		}
-		return Primitive("any")
-	}
-	seen[t] = true
-
-	// Preserve named type information before unwrapping
-	if named, ok := t.(*types.Named); ok {
+		seen[t] = true
 		pkg := ""
 		if named.Obj().Pkg() != nil {
 			pkg = named.Obj().Pkg().Name()
@@ -118,8 +236,6 @@ func fromGoTypeWith(t types.Type, seen map[types.Type]bool) Type {
 		return &NamedType{Pkg: pkg, Name: named.Obj().Name(), Underlying: fromGoTypeWith(named.Underlying(), seen)}
 	}
 	switch t := t.(type) {
-	case *types.Basic:
-		return Primitive(t.Name())
 	case *types.Pointer:
 		return &PointerType{Elem: fromGoTypeWith(t.Elem(), seen)}
 	case *types.Slice:
@@ -239,4 +355,9 @@ func findModuleDir(fwFilePath string) string {
 		}
 		dir = parent
 	}
+}
+
+// FindModuleDir walks parent directories looking for go.mod.
+func FindModuleDir(fwFilePath string) string {
+	return findModuleDir(fwFilePath)
 }

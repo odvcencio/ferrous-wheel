@@ -52,8 +52,8 @@ import "fmt"
 
 func main() {
 	fmt.Println("reflect")
-	name := ""
-	_ = name ?? "fallback"
+	fallback := fn(v) v ?? "fallback"
+	_ = fallback
 }
 `,
 			wantImport: "reflect",

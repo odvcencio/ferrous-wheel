@@ -99,6 +99,35 @@ func f() {
 	}
 }
 
+func TestTranspileNullCoalesceReportsWarning(t *testing.T) {
+	source := []byte(`package main
+
+func f() {
+	x := val ?? "default"
+	_ = x
+}
+`)
+	goCode, warnings, err := TranspileWithOptions(source, TranspileOptions{SourceFile: "test.fw"})
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %+v", warnings)
+	}
+	if warnings[0].Line != 4 {
+		t.Fatalf("expected warning on line 4, got %+v", warnings[0])
+	}
+	if warnings[0].Col <= 0 {
+		t.Fatalf("expected warning column to be set, got %+v", warnings[0])
+	}
+	if !strings.Contains(warnings[0].Message, "unresolved for ??") {
+		t.Fatalf("unexpected warning message: %+v", warnings[0])
+	}
+	if !strings.Contains(goCode, "// fw:warn:") {
+		t.Fatalf("expected inline warning comment in generated code:\n%s", goCode)
+	}
+}
+
 func TestTranspileNullCoalesceNonNil(t *testing.T) {
 	source := []byte(`package main
 
@@ -114,14 +143,48 @@ func f() {
 	}
 	t.Logf("Go:\n%s", goCode)
 
-	if !strings.Contains(goCode, "reflect.ValueOf") {
-		t.Error("expected reflect.ValueOf zero-value check (works for non-nillable string)")
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("did not expect reflect fallback for typed local binding")
 	}
-	if !strings.Contains(goCode, "IsZero") {
-		t.Error("expected IsZero check for zero-value detection")
+	if !strings.Contains(goCode, `if name != ""`) {
+		t.Error("expected typed zero-value check for string binding")
 	}
-	if !strings.Contains(goCode, `"reflect"`) {
-		t.Error("expected reflect import to be injected")
+	if strings.Contains(goCode, `"reflect"`) {
+		t.Error("did not expect reflect import for typed local binding")
+	}
+}
+
+func TestTranspileNullCoalesceImportedAliasAvoidsReflect(t *testing.T) {
+	source := []byte(`package main
+
+import h "net/http"
+
+func req() *h.Request {
+	return nil
+}
+
+func f() {
+	x := req() ?? &h.Request{}
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected typed null-coalesce path, not reflect fallback")
+	}
+	if strings.Contains(goCode, `"reflect"`) {
+		t.Error("did not expect reflect import for typed null-coalesce")
+	}
+	if !strings.Contains(goCode, "func() *h.Request") {
+		t.Error("expected typed null-coalesce return type")
+	}
+	if !strings.Contains(goCode, "return &h.Request{}") {
+		t.Error("expected typed fallback expression")
 	}
 }
 
@@ -146,6 +209,30 @@ func f() {
 	// The body should contain the full expression "x * 2", not just "x"
 	if !strings.Contains(goCode, "return x * 2") {
 		t.Errorf("expected lambda body to capture full binary expression 'x * 2', got:\n%s", goCode)
+	}
+}
+
+func TestTranspileTypedLambdaParamAvoidsReflect(t *testing.T) {
+	source := []byte(`package main
+
+import h "net/http"
+
+func f() {
+	getHost := fn(req: *h.Request) -> string { return req?.Host }
+	_ = getHost
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected typed lambda param path, not reflect fallback")
+	}
+	if !strings.Contains(goCode, "func(req *h.Request) string") {
+		t.Error("expected typed lambda signature")
 	}
 }
 
@@ -193,6 +280,147 @@ func f() {
 	}
 	if !strings.Contains(goCode, `"reflect"`) {
 		t.Error("expected reflect import to be auto-injected")
+	}
+}
+
+func TestTranspileSafeNavReportsWarning(t *testing.T) {
+	source := []byte(`package main
+
+func f() {
+	x := obj?.name
+	_ = x
+}
+`)
+	goCode, warnings, err := TranspileWithOptions(source, TranspileOptions{SourceFile: "test.fw"})
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %+v", warnings)
+	}
+	if warnings[0].Line != 4 {
+		t.Fatalf("expected warning on line 4, got %+v", warnings[0])
+	}
+	if warnings[0].Col <= 0 {
+		t.Fatalf("expected warning column to be set, got %+v", warnings[0])
+	}
+	if !strings.Contains(warnings[0].Message, "unresolved for ?.") {
+		t.Fatalf("unexpected warning message: %+v", warnings[0])
+	}
+	if !strings.Contains(goCode, "// fw:warn:") {
+		t.Fatalf("expected inline warning comment in generated code:\n%s", goCode)
+	}
+}
+
+func TestTranspileSafeNavImportedAliasAvoidsReflect(t *testing.T) {
+	source := []byte(`package main
+
+import h "net/http"
+
+func req() *h.Request {
+	return nil
+}
+
+func f() {
+	x := req()?.Host
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected typed safe-navigation path, not reflect fallback")
+	}
+	if strings.Contains(goCode, `"reflect"`) {
+		t.Error("did not expect reflect import for typed safe-navigation")
+	}
+	if !strings.Contains(goCode, "func() string") {
+		t.Error("expected typed safe-navigation return type")
+	}
+	if !strings.Contains(goCode, ".Host") {
+		t.Error("expected direct field access on imported type")
+	}
+}
+
+func TestTranspileSafeNavFunctionParamAvoidsReflect(t *testing.T) {
+	source := []byte(`package main
+
+import h "net/http"
+
+func f(req *h.Request) string {
+	x := req?.Host
+	return x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected typed parameter path, not reflect fallback")
+	}
+	if !strings.Contains(goCode, "func() string") {
+		t.Error("expected typed safe-navigation return type")
+	}
+}
+
+func TestTranspileSafeNavShortVarAvoidsReflect(t *testing.T) {
+	source := []byte(`package main
+
+import h "net/http"
+
+func req() *h.Request {
+	return nil
+}
+
+func f() {
+	request := req()
+	x := request?.Host
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected typed short-var path, not reflect fallback")
+	}
+}
+
+func TestTranspileSafeNavBlockScopeRestoresOuterBinding(t *testing.T) {
+	source := []byte(`package main
+
+import h "net/http"
+
+func f(req *h.Request) string {
+	if true {
+		let req = 1
+		_ = req
+	}
+	x := req?.Host
+	return x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected outer binding to survive inner block scope")
+	}
+	if !strings.Contains(goCode, "func() string") {
+		t.Error("expected typed safe-navigation after inner block")
 	}
 }
 
@@ -644,6 +872,29 @@ func f() {
 	}
 }
 
+func TestTranspileIfLetBindingAvoidsReflect(t *testing.T) {
+	source := []byte(`package main
+
+import h "net/http"
+
+func f(req *h.Request) {
+	if let value = req {
+		x := value?.Host
+		_ = x
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected typed if-let binding path, not reflect fallback")
+	}
+}
+
 func TestTranspileForIn(t *testing.T) {
 	source := []byte(`package main
 func f() {
@@ -702,6 +953,29 @@ func f() {
 
 	if !strings.Contains(goCode, "for i, v := range items") {
 		t.Errorf("expected 'for i, v := range items', got:\n%s", goCode)
+	}
+}
+
+func TestTranspileForInLoopVarAvoidsReflect(t *testing.T) {
+	source := []byte(`package main
+
+import h "net/http"
+
+func f(reqs []*h.Request) {
+	for req in reqs {
+		x := req?.Host
+		_ = x
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "reflect.ValueOf") {
+		t.Error("expected typed loop binding path, not reflect fallback")
 	}
 }
 
@@ -1128,6 +1402,28 @@ func f() {
 	}
 }
 
+func TestTranspileMmapWritable(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	mmap file "data.bin" writable as data []byte {
+		_ = data
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, `os.OpenFile("data.bin", os.O_RDWR, 0)`) {
+		t.Error("expected writable mmap to use os.OpenFile")
+	}
+	if !strings.Contains(goCode, "syscall.PROT_READ|syscall.PROT_WRITE") {
+		t.Error("expected writable mmap protections")
+	}
+}
+
 func TestTranspilePacked(t *testing.T) {
 	source := []byte(`package main
 func f() {
@@ -1145,6 +1441,54 @@ func f() {
 	}
 	if !strings.Contains(goCode, "x := 1") {
 		t.Error("expected let to transpile to :=")
+	}
+}
+
+func TestTranspilePackedTopLevelStructAddsSizeAssertion(t *testing.T) {
+	source := []byte(`package main
+
+packed type Packet struct {
+	B uint16
+	A uint8
+	C uint8
+}
+
+func main() {}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "unsafe.Sizeof(Packet{})") {
+		t.Fatal("expected packed size assertion")
+	}
+	if !strings.Contains(goCode, "expected size 4") {
+		t.Fatal("expected computed packed size")
+	}
+	if !strings.Contains(goCode, `panic(fmt.Sprintf("packed struct Packet:`) {
+		t.Fatal("expected descriptive packed struct panic")
+	}
+}
+
+func TestTranspilePackedSkipsAssertionForUnknownFieldSize(t *testing.T) {
+	source := []byte(`package main
+
+packed type Packet struct {
+	Name string
+}
+
+func main() {}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Contains(goCode, "unsafe.Sizeof(Packet{})") {
+		t.Fatal("did not expect packed size assertion for unknown field size")
 	}
 }
 

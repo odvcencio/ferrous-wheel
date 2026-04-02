@@ -1248,17 +1248,33 @@ func TestStressPackedStruct(t *testing.T) {
 import "fmt"
 
 packed type Packet struct {
+	B uint16
+	A uint8
+	C uint8
+}
+
+func main() {
+	p := Packet{B: 11, A: 7, C: 9}
+	fmt.Println(p.A, p.B, p.C)
+}
+`)
+	if got != "7 11 9" {
+		t.Errorf("expected packed struct to compile and run, got %q", got)
+	}
+}
+
+func TestStressPackedStructPanicsOnMisalignment(t *testing.T) {
+	got := runCheckErrorWithFiles(t, `package main
+
+packed type Packet struct {
 	A uint8
 	B uint16
 }
 
-func main() {
-	p := Packet{A: 7, B: 11}
-	fmt.Println(p.A, p.B)
-}
-`)
-	if got != "7 11" {
-		t.Errorf("expected packed struct to compile and run, got %q", got)
+func main() {}
+`, nil)
+	if !strings.Contains(got, "packed struct Packet: expected size 3") {
+		t.Errorf("expected packed struct alignment panic, got:\n%s", got)
 	}
 }
 
@@ -1543,6 +1559,25 @@ func main() {
 	})
 	if got != "0" {
 		t.Errorf("expected empty mapping to expose zero-length slice, got %q", got)
+	}
+}
+
+func TestStressMmapWritableAllowsMutation(t *testing.T) {
+	got := runCheckWithFiles(t, `package main
+
+import "fmt"
+
+func main() {
+	mmap file "mutable.bin" writable as data []byte {
+		data[0] = 'j'
+		fmt.Println(string(data))
+	}
+}
+`, map[string][]byte{
+		"mutable.bin": []byte("hello"),
+	})
+	if got != "jello" {
+		t.Errorf("expected writable mapping to allow mutation, got %q", got)
 	}
 }
 

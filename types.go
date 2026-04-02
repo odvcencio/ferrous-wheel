@@ -318,7 +318,19 @@ func ZeroExpr(typ Type) (string, error) {
 		}
 		return "(" + t.Name + "{})", nil
 	case *NamedType:
-		return ZeroExpr(t.Underlying)
+		if t.Underlying == nil {
+			return "", fmt.Errorf("cannot determine zero value for %s", t)
+		}
+		switch u := t.Underlying.(type) {
+		case Primitive:
+			return ZeroExpr(u)
+		case *PointerType, *SliceType, *MapType, *ChanType, *InterfaceType, *FuncType:
+			return "nil", nil
+		case *StructType, *EnumType:
+			return "(" + t.String() + "{})", nil
+		default:
+			return ZeroExpr(t.Underlying)
+		}
 	case *EnumType:
 		return "(" + t.Name + "{})", nil
 	default:

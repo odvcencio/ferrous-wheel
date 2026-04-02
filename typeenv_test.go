@@ -1,6 +1,11 @@
 package ferrouswheel
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // --- TypeEnv core tests (Task 4) ---
 
@@ -241,6 +246,70 @@ func main() {}`)
 	}
 }
 
+func TestCollectTypesMultiRegistersSymbolsWithLocations(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.fw")
+	typesPath := filepath.Join(dir, "types.fw")
+
+	env, err := CollectTypesMulti(map[string][]byte{
+		mainPath:  []byte("package main\n\nfunc hello() {}\n"),
+		typesPath: []byte("package main\n\nenum Color { Red, Blue }\n"),
+	})
+	if err != nil {
+		t.Fatalf("CollectTypesMulti: %v", err)
+	}
+
+	symbols := env.Symbols()
+	if len(symbols) != 2 {
+		t.Fatalf("expected 2 symbols, got %+v", symbols)
+	}
+	if symbol, ok := env.FindSymbol("hello"); !ok {
+		t.Fatalf("expected hello symbol")
+	} else if symbol.Location.File != mainPath {
+		t.Fatalf("expected hello in %s, got %+v", mainPath, symbol)
+	}
+	if symbol, ok := env.FindSymbol("Color"); !ok {
+		t.Fatalf("expected Color symbol")
+	} else if symbol.Location.File != typesPath {
+		t.Fatalf("expected Color in %s, got %+v", typesPath, symbol)
+	}
+}
+
+func TestCollectTypesMultiRejectsDuplicateSymbols(t *testing.T) {
+	dir := t.TempDir()
+	_, err := CollectTypesMulti(map[string][]byte{
+		filepath.Join(dir, "a.fw"): []byte("package main\n\nfunc hello() {}\n"),
+		filepath.Join(dir, "b.fw"): []byte("package main\n\nfunc hello() {}\n"),
+	})
+	if err == nil {
+		t.Fatalf("expected duplicate symbol error")
+	}
+	if !strings.Contains(err.Error(), "declared in both") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCollectTypesFromDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.fw"), []byte("package main\n\nfunc hello() {}\n"), 0644); err != nil {
+		t.Fatalf("write main.fw: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "types.fw"), []byte("package main\n\ntype User struct { Name string }\n"), 0644); err != nil {
+		t.Fatalf("write types.fw: %v", err)
+	}
+
+	env, err := CollectTypesFromDir(dir)
+	if err != nil {
+		t.Fatalf("CollectTypesFromDir: %v", err)
+	}
+	if _, err := env.LookupFunc("hello"); err != nil {
+		t.Fatalf("expected hello function: %v", err)
+	}
+	if _, err := env.LookupStruct("User"); err != nil {
+		t.Fatalf("expected User struct: %v", err)
+	}
+}
+
 func TestCollectMultiImport(t *testing.T) {
 	src := []byte(`package main
 import (
@@ -319,6 +388,43 @@ func TestImportResolutionFailsGracefully(t *testing.T) {
 	// Should return error, not panic
 	if err == nil {
 		t.Error("expected error for nonexistent package")
+	}
+}
+
+func TestLoadCollectedImportsRespectsAlias(t *testing.T) {
+	src := []byte(`package main
+import h "net/http"
+
+func req() *h.Request {
+	return nil
+}`)
+
+	env, err := collectTypes(src)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if err := env.LoadCollectedImports(""); err != nil {
+		t.Fatalf("LoadCollectedImports: %v", err)
+	}
+
+	typ, err := env.LookupImportedType("h", "Request")
+	if err != nil {
+		t.Fatalf("LookupImportedType: %v", err)
+	}
+	if typ.String() != "h.Request" {
+		t.Fatalf("got %s, want h.Request", typ)
+	}
+
+	fn, err := env.LookupFunc("req")
+	if err != nil {
+		t.Fatalf("LookupFunc: %v", err)
+	}
+	ptr, ok := fn.Results[0].(*PointerType)
+	if !ok {
+		t.Fatalf("expected pointer result, got %T", fn.Results[0])
+	}
+	if ptr.Elem.String() != "h.Request" {
+		t.Fatalf("got %s, want h.Request", ptr.Elem)
 	}
 }
 
