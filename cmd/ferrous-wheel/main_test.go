@@ -244,6 +244,59 @@ func TestPrintWarningsFormatsLineAndColumn(t *testing.T) {
 	}
 }
 
+func TestCLIFmtToStdout(t *testing.T) {
+	tmpDir := t.TempDir()
+	fwFile := filepath.Join(tmpDir, "test.fw")
+	os.WriteFile(fwFile, []byte("package main\n\nfunc main() {\n\tlet   x   =   1\n}\n"), 0644)
+
+	var stderr bytes.Buffer
+	code := runCLI([]string{"ferrous-wheel", "fmt", fwFile}, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+}
+
+func TestCLIFmtCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	fwFile := filepath.Join(tmpDir, "test.fw")
+	os.WriteFile(fwFile, []byte("package main\n\nfunc main() {\n\tlet   x   =   1\n}\n"), 0644)
+
+	var stderr bytes.Buffer
+	code := runCLI([]string{"ferrous-wheel", "fmt", "--check", fwFile}, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit 1 for unformatted file, got %d", code)
+	}
+}
+
+func TestCLIFmtCheckAlreadyFormatted(t *testing.T) {
+	tmpDir := t.TempDir()
+	fwFile := filepath.Join(tmpDir, "test.fw")
+	os.WriteFile(fwFile, []byte("package main\n\nfunc main() {\n\tlet x = 1\n}\n"), 0644)
+
+	var stderr bytes.Buffer
+	code := runCLI([]string{"ferrous-wheel", "fmt", "--check", fwFile}, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit 0 for already formatted file, got %d", code)
+	}
+}
+
+func TestCLIFmtWriteInPlace(t *testing.T) {
+	tmpDir := t.TempDir()
+	fwFile := filepath.Join(tmpDir, "test.fw")
+	os.WriteFile(fwFile, []byte("package main\n\nfunc main() {\n\tlet   x   =   1\n}\n"), 0644)
+
+	var stderr bytes.Buffer
+	code := runCLI([]string{"ferrous-wheel", "fmt", "-w", fwFile}, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+
+	result, _ := os.ReadFile(fwFile)
+	if !strings.Contains(string(result), "let x = 1") {
+		t.Errorf("expected formatted content written to file, got: %s", result)
+	}
+}
+
 func TestRunCLIErrors(t *testing.T) {
 	tests := []struct {
 		name       string
