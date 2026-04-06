@@ -2149,3 +2149,154 @@ func main() {
 		t.Error("match with int arms should resolve to int, not interface{}")
 	}
 }
+
+func TestIntegrationLetMutWithIfExpression(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	let mut x = if true { 1 } else { 2 }
+	x = 3
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "func()") {
+		t.Error("expected IIFE for if-expression")
+	}
+	if !strings.Contains(goCode, "x = 3") {
+		t.Error("expected mutable reassignment")
+	}
+}
+
+func TestIntegrationLetImmutableWithIfExpressionReassignError(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	let x = if true { 1 } else { 2 }
+	x = 3
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected error for reassignment of immutable if-expression binding")
+	}
+}
+
+func TestIntegrationPostfixTryWithLetMut(t *testing.T) {
+	source := []byte(`package main
+
+import "os"
+
+func main() error {
+	let mut f = os.Open("test")?
+	_ = f
+	f = os.Open("other")?
+	_ = f
+	return nil
+}
+`)
+	_, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+}
+
+func TestIntegrationPostfixTryInsideIfExpressionError(t *testing.T) {
+	source := []byte(`package main
+
+import "os"
+
+func open() (*os.File, error) {
+	let x = if true { os.Open("f")? } else { nil }
+	_ = x
+	return nil, nil
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected error for ? inside if-expression")
+	}
+}
+
+func TestIntegrationAllFeaturesEndToEnd(t *testing.T) {
+	source := []byte(`package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func process(input string) (string, error) {
+	let parsed = strconv.Atoi(input)?
+	let mut result = if parsed > 0 { "positive" } else { "non-positive" }
+	result = fmt.Sprintf("%s: %d", result, parsed)
+	return result, nil
+}
+
+func main() error {
+	let output = try process("42")
+	fmt.Println(output)
+	return nil
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+	// Basic sanity: code was generated
+	if !strings.Contains(goCode, "func process") {
+		t.Error("expected process function")
+	}
+	if !strings.Contains(goCode, "func main") {
+		t.Error("expected main function")
+	}
+}
+
+func TestIntegrationLetImmutablePostfixTryImmutable(t *testing.T) {
+	// let (without mut) + postfix ? should produce immutable binding
+	source := []byte(`package main
+
+import "os"
+
+func main() error {
+	let f = os.Open("test")?
+	f = os.Open("other")? // should error — f is immutable
+	return nil
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected error for reassignment of immutable postfix-try binding")
+	}
+	if !strings.Contains(err.Error(), "cannot assign to immutable binding") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestIntegrationPrefixTryAndPostfixTryCoexist(t *testing.T) {
+	source := []byte(`package main
+
+import "os"
+
+func main() error {
+	let f = try os.Open("test")
+	let g = os.Open("test2")?
+	_ = f
+	_ = g
+	return nil
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	// Both should produce error checks
+	count := strings.Count(goCode, "!= nil")
+	if count < 2 {
+		t.Errorf("expected at least 2 nil checks, got %d", count)
+	}
+}
