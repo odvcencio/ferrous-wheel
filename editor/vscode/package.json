@@ -4,26 +4,43 @@
   "description": "Rust-inspired syntax sugar for Go — language support for .fw files",
   "version": "0.2.0",
   "publisher": "odvcencio",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Programming Languages"],
-  "activationEvents": ["onLanguage:ferrous-wheel"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:ferrous-wheel"
+  ],
   "main": "./out/extension.js",
   "contributes": {
-    "languages": [{
-      "id": "ferrous-wheel",
-      "aliases": ["Ferrous Wheel", "fw"],
-      "extensions": [".fw"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "ferrous-wheel",
-      "scopeName": "source.fw",
-      "path": "./syntaxes/ferrous-wheel.tmLanguage.json"
-    }],
-    "snippets": [{
-      "language": "ferrous-wheel",
-      "path": "./snippets/ferrous-wheel.json"
-    }],
+    "languages": [
+      {
+        "id": "ferrous-wheel",
+        "aliases": [
+          "Ferrous Wheel",
+          "fw"
+        ],
+        "extensions": [
+          ".fw"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ferrous-wheel",
+        "scopeName": "source.fw",
+        "path": "./syntaxes/ferrous-wheel.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "ferrous-wheel",
+        "path": "./snippets/ferrous-wheel.json"
+      }
+    ],
     "configuration": {
       "title": "Ferrous Wheel",
       "properties": {
@@ -40,9 +57,10 @@
     "vscode-languageserver-protocol": "^3.17.5"
   },
   "devDependencies": {
+    "@types/node": "^25.5.2",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.0",
-    "@vscode/vsce": "^3.0.0"
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.3.0"
   },
   "scripts": {
     "compile": "tsc -p .",

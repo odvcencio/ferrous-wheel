@@ -1,95 +1,95 @@
 {
-  "fn function": {
-    "prefix": "fn",
-    "body": [
-      "fn ${1:name}(${2:params}) ${3:ReturnType} {",
-      "\t$0",
-      "}"
-    ],
-    "description": "Define a ferrous-wheel fn function"
-  },
-  "let binding": {
-    "prefix": "let",
-    "body": ["let ${1:name} = ${2:value}"],
-    "description": "Immutable let binding"
-  },
-  "mut binding": {
-    "prefix": "mut",
-    "body": ["mut ${1:name} = ${2:value}"],
-    "description": "Mutable binding"
-  },
-  "match expression": {
-    "prefix": "match",
-    "body": [
-      "match ${1:expr} {",
-      "\t${2:pattern} => ${3:result},",
-      "\t_ => ${4:default},",
-      "}"
-    ],
-    "description": "Match expression"
-  },
-  "guard statement": {
-    "prefix": "guard",
-    "body": [
-      "guard ${1:condition} else {",
-      "\t${2:return}",
-      "}"
-    ],
-    "description": "Guard early-return"
-  },
-  "enum declaration": {
+  "Enum Declaration": {
     "prefix": "enum",
     "body": [
       "enum ${1:Name} {",
-      "\t${2:Variant},",
+      "\t${2:Variant1},",
+      "\t${3:Variant2},",
       "}"
     ],
-    "description": "Enum declaration"
+    "description": "FW enum (sum type) declaration"
   },
-  "impl block": {
+  "Match Expression": {
+    "prefix": "match",
+    "body": [
+      "match ${1:expr} {",
+      "\t${2:pattern} => ${3:body},",
+      "}"
+    ],
+    "description": "FW match expression"
+  },
+  "Impl Block": {
     "prefix": "impl",
     "body": [
       "impl ${1:Type} {",
       "\t$0",
       "}"
     ],
-    "description": "Impl block"
+    "description": "FW impl block for method definitions"
   },
-  "derive attribute": {
-    "prefix": "derive",
-    "body": ["derive(${1:Debug, Clone})"],
-    "description": "Derive macro"
+  "Let Binding": {
+    "prefix": "let",
+    "body": ["let ${1:name} = ${2:value}"],
+    "description": "FW immutable let binding"
   },
-  "fan out": {
+  "Let Mut Binding": {
+    "prefix": "letmut",
+    "body": ["let mut ${1:name} = ${2:value}"],
+    "description": "FW mutable let binding"
+  },
+  "Guard Statement": {
+    "prefix": "guard",
+    "body": [
+      "guard ${1:condition} else {",
+      "\t${2:return}",
+      "}"
+    ],
+    "description": "FW guard early-return statement"
+  },
+  "Fan Out": {
     "prefix": "fan",
     "body": [
       "fan {",
-      "\t$0",
+      "\t${1:task1}",
+      "\t${2:task2}",
       "}"
     ],
-    "description": "Fan-out concurrency block"
+    "description": "FW fan-out concurrency block"
   },
-  "concurrent block": {
-    "prefix": "concurrent",
+  "Retry": {
+    "prefix": "retry",
     "body": [
-      "concurrent {",
+      "retry(${1:3}) {",
       "\t$0",
       "}"
     ],
-    "description": "Concurrent execution block"
+    "description": "FW retry block with attempt count"
   },
-  "arena allocator": {
-    "prefix": "arena",
+  "Breaker": {
+    "prefix": "breaker",
     "body": [
-      "arena ${1:name} {",
+      "breaker ${1:name} {",
       "\t$0",
       "}"
     ],
-    "description": "Arena allocator block"
+    "description": "FW circuit breaker block"
   },
-  "try operator": {
-    "prefix": "try",
-    "body": ["try ${1:expr}"],
-    "description": "try error propagation"
+  "Mmap": {
+    "prefix": "mmap",
+    "body": [
+      "mmap ${1:name} = open(${2:\"path\"}, ${3:size})",
+      "${1:name}.write(${4:offset}, ${5:data})"
+    ],
+    "description": "FW writable memory-mapped file"
+  },
+  "Select": {
+    "prefix": "select",
+    "body": [
+      "select! {",
+      "\t${1:chan1} => ${2:body1},",
+      "\t${3:chan2} => ${4:body2},",
+      "}"
+    ],
+    "description": "FW select! channel multiplexing"
   }
 }
