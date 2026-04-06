@@ -33,15 +33,41 @@ type SymbolInfo struct {
 
 // Scope holds variable bindings for a lexical scope.
 type Scope struct {
-	vars   map[string]Type
-	parent *Scope
+	vars    map[string]Type
+	mutable map[string]bool // true = let mut, false = let; absent = Go-native (unrestricted)
+	parent  *Scope
 }
 
 func newScope(parent *Scope) *Scope {
-	return &Scope{vars: make(map[string]Type), parent: parent}
+	return &Scope{vars: make(map[string]Type), mutable: make(map[string]bool), parent: parent}
 }
 
 func (s *Scope) set(name string, typ Type) { s.vars[name] = typ }
+
+func (s *Scope) setWithMut(name string, typ Type, mut bool) {
+	s.vars[name] = typ
+	s.mutable[name] = mut
+}
+
+func (s *Scope) isMutable(name string) bool {
+	if m, ok := s.mutable[name]; ok {
+		return m
+	}
+	if s.parent != nil {
+		return s.parent.isMutable(name)
+	}
+	return true // Go-native bindings default to mutable
+}
+
+func (s *Scope) isLetBinding(name string) bool {
+	if _, ok := s.mutable[name]; ok {
+		return true
+	}
+	if s.parent != nil {
+		return s.parent.isLetBinding(name)
+	}
+	return false
+}
 
 func (s *Scope) get(name string) (Type, bool) {
 	if t, ok := s.vars[name]; ok {
@@ -219,11 +245,15 @@ func cloneScope(scope *Scope) *Scope {
 		return nil
 	}
 	cloned := &Scope{
-		vars:   make(map[string]Type, len(scope.vars)),
-		parent: cloneScope(scope.parent),
+		vars:    make(map[string]Type, len(scope.vars)),
+		mutable: make(map[string]bool, len(scope.mutable)),
+		parent:  cloneScope(scope.parent),
 	}
 	for name, typ := range scope.vars {
 		cloned.vars[name] = typ
+	}
+	for name, mut := range scope.mutable {
+		cloned.mutable[name] = mut
 	}
 	return cloned
 }

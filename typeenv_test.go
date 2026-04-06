@@ -428,6 +428,45 @@ func req() *h.Request {
 	}
 }
 
+// --- Scope mutability tests (Task 2) ---
+
+func TestScopeMutability(t *testing.T) {
+	s := newScope(nil)
+	s.setWithMut("x", Primitive("int"), false) // immutable
+	s.setWithMut("y", Primitive("int"), true)  // mutable
+
+	if s.isMutable("x") {
+		t.Error("x should be immutable")
+	}
+	if !s.isMutable("y") {
+		t.Error("y should be mutable")
+	}
+}
+
+func TestScopeMutabilityInheritance(t *testing.T) {
+	parent := newScope(nil)
+	parent.setWithMut("x", Primitive("int"), false)
+	child := newScope(parent)
+
+	if child.isMutable("x") {
+		t.Error("x inherited from parent should be immutable")
+	}
+}
+
+func TestCloneScopePreservesMutability(t *testing.T) {
+	s := newScope(nil)
+	s.setWithMut("x", Primitive("int"), false)
+	s.setWithMut("y", Primitive("int"), true)
+
+	cloned := cloneScope(s)
+	if cloned.isMutable("x") {
+		t.Error("cloned x should be immutable")
+	}
+	if !cloned.isMutable("y") {
+		t.Error("cloned y should be mutable")
+	}
+}
+
 func TestCollectImplBlock(t *testing.T) {
 	src := []byte(`package main
 impl Point {
