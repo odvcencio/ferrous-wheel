@@ -2048,3 +2048,104 @@ func main() {
 		t.Error("expected fully typed lambda with inferred types")
 	}
 }
+
+func TestTernaryNoInterfaceFallback(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	x := 1
+	let y = x > 0 ? "yes" : "no"
+	_ = y
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if strings.Contains(goCode, "interface{}") {
+		t.Logf("Go:\n%s", goCode)
+		t.Error("ternary should resolve to string, not interface{}")
+	}
+}
+
+func TestMatchNoInterfaceFallback(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	x := 1
+	let y = match x {
+		1 => "one",
+		2 => "two",
+	}
+	_ = y
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if strings.Contains(goCode, "interface{}") {
+		t.Logf("Go:\n%s", goCode)
+		t.Error("match should resolve to string, not interface{}")
+	}
+}
+
+func TestIfExpressionNoInterfaceFallback(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	let y = if true { "yes" } else { "no" }
+	_ = y
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if strings.Contains(goCode, "interface{}") {
+		t.Logf("Go:\n%s", goCode)
+		t.Error("if-expression should resolve to string, not interface{}")
+	}
+}
+
+func TestTernaryIntNoInterfaceFallback(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	x := 1
+	let y = x > 0 ? 42 : 0
+	_ = y
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if strings.Contains(goCode, "interface{}") {
+		t.Logf("Go:\n%s", goCode)
+		t.Error("ternary with int arms should resolve to int, not interface{}")
+	}
+}
+
+func TestMatchMixedIntsNoInterfaceFallback(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	x := 1
+	let y = match x {
+		1 => 10,
+		2 => 20,
+		3 => 30,
+	}
+	_ = y
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if strings.Contains(goCode, "interface{}") {
+		t.Logf("Go:\n%s", goCode)
+		t.Error("match with int arms should resolve to int, not interface{}")
+	}
+}

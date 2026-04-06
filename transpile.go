@@ -1274,7 +1274,7 @@ func (t *fwTranspiler) emitTernary(n *gotreesitter.Node) string {
 		consType, err1 := t.typeEnv.Resolve(cons, t.lang, t.src)
 		altType, err2 := t.typeEnv.Resolve(alt, t.lang, t.src)
 		if err1 == nil && err2 == nil {
-			unified, uerr := Unify(consType, altType)
+			unified, uerr := UnifyWithContext(t.inferCtx, consType, altType)
 			if uerr == nil {
 				if u, ok := unified.(*UntypedConstType); ok {
 					unified = u.Default()
@@ -1391,7 +1391,7 @@ func (t *fwTranspiler) emitIfExpression(n *gotreesitter.Node) string {
 			unified := branchTypes[0]
 			allOk := true
 			for _, bt := range branchTypes[1:] {
-				u, uerr := Unify(unified, bt)
+				u, uerr := UnifyWithContext(t.inferCtx, unified, bt)
 				if uerr != nil {
 					allOk = false
 					break
@@ -1612,7 +1612,7 @@ func (t *fwTranspiler) emitMatch(n *gotreesitter.Node) string {
 		if allResolved && len(armTypes) > 0 {
 			unified := armTypes[0]
 			for _, at := range armTypes[1:] {
-				u, uerr := Unify(unified, at)
+				u, uerr := UnifyWithContext(t.inferCtx, unified, at)
 				if uerr != nil {
 					unified = nil
 					break
@@ -1667,16 +1667,24 @@ func (t *fwTranspiler) emitNullCoalesce(n *gotreesitter.Node) string {
 
 	// Typed path: resolve left type, use type-specific zero check
 	if t.typeEnv != nil {
-		leftType, err := t.typeEnv.Resolve(left, t.lang, t.src)
-		if err == nil {
-			if u, ok := leftType.(*UntypedConstType); ok {
-				leftType = u.Default()
+		leftType, lerr := t.typeEnv.Resolve(left, t.lang, t.src)
+		rightType, rerr := t.typeEnv.Resolve(right, t.lang, t.src)
+		// Try unifying left and right to get a concrete type even when one side is untyped
+		resolvedType := leftType
+		if lerr == nil && rerr == nil {
+			if unified, uerr := UnifyWithContext(t.inferCtx, leftType, rightType); uerr == nil {
+				resolvedType = unified
 			}
-			zeroExpr, zerr := ZeroExpr(leftType)
-			if zerr == nil && leftType != nil {
+		}
+		if lerr == nil && resolvedType != nil {
+			if u, ok := resolvedType.(*UntypedConstType); ok {
+				resolvedType = u.Default()
+			}
+			zeroExpr, zerr := ZeroExpr(resolvedType)
+			if zerr == nil {
 				l := t.emit(left)
 				return fmt.Sprintf("func() %s { if %s != %s { return %s }; return %s }()",
-					leftType.String(), l, zeroExpr, l, t.emit(right))
+					resolvedType.String(), l, zeroExpr, l, t.emit(right))
 			}
 		}
 	}
@@ -1732,6 +1740,10 @@ func (t *fwTranspiler) emitSafeNav(n *gotreesitter.Node) string {
 	if t.typeEnv != nil {
 		objType, err := t.typeEnv.Resolve(obj, t.lang, t.src)
 		if err == nil {
+			// Apply inference context substitutions in case objType contains TypeVars
+			if t.inferCtx != nil {
+				objType = t.inferCtx.Apply(objType)
+			}
 			fieldName := t.text(field)
 			fieldType, ferr := t.typeEnv.ResolveFieldAccess(objType, fieldName)
 			if ferr == nil {
@@ -1839,6 +1851,9 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 					// Try to resolve return type from body
 					lambdaType, err := t.typeEnv.Resolve(n, t.lang, t.src)
 					if err == nil {
+						if t.inferCtx != nil {
+							lambdaType = t.inferCtx.Apply(lambdaType)
+						}
 						if ft, ok := lambdaType.(*FuncType); ok && len(ft.Results) > 0 {
 							rt := t.normalizeBindingType(ft.Results[0])
 							if rt != nil {
@@ -2463,6 +2478,10 @@ func (t *fwTranspiler) emitListComprehension(n *gotreesitter.Node) string {
 	if t.typeEnv != nil {
 		iterType, err := t.typeEnv.Resolve(iterable, t.lang, t.src)
 		if err == nil {
+			// Apply inference context substitutions to resolve TypeVars
+			if t.inferCtx != nil {
+				iterType = t.inferCtx.Apply(iterType)
+			}
 			if sliceType, ok := iterType.(*SliceType); ok {
 				elemType = sliceType.Elem
 				// Register the loop variable's type in a temporary scope
@@ -2471,6 +2490,9 @@ func (t *fwTranspiler) emitListComprehension(n *gotreesitter.Node) string {
 				exprType, exprErr := t.typeEnv.Resolve(expr, t.lang, t.src)
 				t.typeEnv.PopScope()
 				if exprErr == nil {
+					if t.inferCtx != nil {
+						exprType = t.inferCtx.Apply(exprType)
+					}
 					exprType = t.normalizeBindingType(exprType)
 					if exprType != nil {
 						elemTypeStr = exprType.String()
