@@ -171,6 +171,45 @@ func f() {
 	}
 }
 
+func TestParseLetMut(t *testing.T) {
+	sexpr := parseFW(t, `package main
+func main() {
+	let mut x = 1
+}
+`)
+	if !strings.Contains(sexpr, "let_declaration") {
+		t.Error("expected let_declaration node")
+	}
+	if !strings.Contains(sexpr, `"mut"`) {
+		t.Error("expected mut keyword in parse tree")
+	}
+}
+
+func TestParseLetMutMulti(t *testing.T) {
+	sexpr := parseFW(t, `package main
+func main() {
+	let mut (a, b) = f()
+}
+`)
+	if !strings.Contains(sexpr, "let_multi_declaration") {
+		t.Error("expected let_multi_declaration node")
+	}
+	if !strings.Contains(sexpr, `"mut"`) {
+		t.Error("expected mut keyword in parse tree")
+	}
+}
+
+func TestParseLetImmutableStillWorks(t *testing.T) {
+	sexpr := parseFW(t, `package main
+func main() {
+	let x = 1
+}
+`)
+	if !strings.Contains(sexpr, "let_declaration") {
+		t.Error("expected let_declaration node")
+	}
+}
+
 func TestMatch(t *testing.T) {
 	sexp := parseFW(t, `package main
 func f() {

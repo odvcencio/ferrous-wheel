@@ -122,9 +122,10 @@ func Grammar() *GrammarType {
 			),
 		))
 
-		// --- let binding: let x = expr  or  let x: int = expr ---
+		// --- let binding: let x = expr  or  let x: int = expr  or  let mut x = expr ---
 		g.Define("let_declaration", Seq(
 			Str("let"),
+			Optional(Field("mutable", Alias(Str("mut"), `"mut"`, true))),
 			Field("name", Sym("identifier")),
 			Optional(Seq(Str(":"), Field("type_annotation", Sym("_type")))),
 			Str("="),
@@ -137,10 +138,11 @@ func Grammar() *GrammarType {
 			Optional(Seq(Str(":"), Field("type", Sym("_type")))),
 		))
 
-		// --- let multi-assignment: let (a, b) = f()  or  let (a: int, b: string) = f() ---
+		// --- let multi-assignment: let (a, b) = f()  or  let (a: int, b: string) = f()  or  let mut (a, b) = f() ---
 		// Transpiles to: a, b := f()
 		g.Define("let_multi_declaration", Seq(
 			Str("let"),
+			Optional(Field("mutable", Alias(Str("mut"), `"mut"`, true))),
 			Str("("),
 			CommaSep1(Choice(Sym("let_typed_binding"), Sym("identifier"))),
 			Str(")"),
