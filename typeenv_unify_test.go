@@ -61,6 +61,22 @@ func TestUnifyNamedVsUnderlying(t *testing.T) {
 	}
 }
 
+func TestTypeVarEquality(t *testing.T) {
+	a := &TypeVar{ID: 1, Name: "T"}
+	b := &TypeVar{ID: 1, Name: "T"}
+	c := &TypeVar{ID: 2, Name: "U"}
+
+	if !TypeEquals(a, b) {
+		t.Error("same-ID TypeVars should be equal")
+	}
+	if TypeEquals(a, c) {
+		t.Error("different-ID TypeVars should not be equal")
+	}
+	if TypeEquals(a, Primitive("int")) {
+		t.Error("TypeVar should not equal Primitive")
+	}
+}
+
 func TestUnifyNilWithSlice(t *testing.T) {
 	sl := &SliceType{Elem: Primitive("int")}
 	result, err := Unify(&UntypedConstType{Kind: UntypedNil}, sl)

@@ -222,6 +222,15 @@ func (u *UntypedConstType) Default() Type {
 	}
 }
 
+// TypeVar represents an unresolved type variable used during inference.
+type TypeVar struct {
+	ID   int
+	Name string // for error messages: "T in Result[T]"
+}
+
+func (tv *TypeVar) String() string { return "?" + tv.Name }
+func (tv *TypeVar) typeTag()       {}
+
 // UnresolvedType is the poison pill -- triggers compile error at emit time.
 type UnresolvedType struct {
 	File string
@@ -286,6 +295,9 @@ func TypeEquals(a, b Type) bool {
 	case *UntypedConstType:
 		b, ok := b.(*UntypedConstType)
 		return ok && a.Kind == b.Kind
+	case *TypeVar:
+		b, ok := b.(*TypeVar)
+		return ok && a.ID == b.ID
 	default:
 		return false
 	}
@@ -333,6 +345,8 @@ func ZeroExpr(typ Type) (string, error) {
 		}
 	case *EnumType:
 		return "(" + t.Name + "{})", nil
+	case *TypeVar:
+		panic(fmt.Sprintf("ZeroExpr called on unresolved TypeVar %s (ID %d) -- must substitute first", t.Name, t.ID))
 	default:
 		return "", fmt.Errorf("cannot determine zero value for %s", typ)
 	}
