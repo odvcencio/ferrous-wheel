@@ -1,4 +1,4 @@
-.PHONY: wasm bench
+.PHONY: wasm bench playground-backend
 
 wasm:
 	GOOS=js GOARCH=wasm go build -o playground/frontend/fw.wasm ./playground/wasm/
@@ -6,3 +6,6 @@ wasm:
 
 bench:
 	go test -bench=. -benchmem -count=5 ./bench/... | tee bench/results.txt
+
+playground-backend:
+	docker build -t registry.example.com/orchard/fw-playground-backend -f playground/Dockerfile .
