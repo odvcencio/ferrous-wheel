@@ -1,0 +1,95 @@
+{
+  "fn function": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:params}) ${3:ReturnType} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Define a ferrous-wheel fn function"
+  },
+  "let binding": {
+    "prefix": "let",
+    "body": ["let ${1:name} = ${2:value}"],
+    "description": "Immutable let binding"
+  },
+  "mut binding": {
+    "prefix": "mut",
+    "body": ["mut ${1:name} = ${2:value}"],
+    "description": "Mutable binding"
+  },
+  "match expression": {
+    "prefix": "match",
+    "body": [
+      "match ${1:expr} {",
+      "\t${2:pattern} => ${3:result},",
+      "\t_ => ${4:default},",
+      "}"
+    ],
+    "description": "Match expression"
+  },
+  "guard statement": {
+    "prefix": "guard",
+    "body": [
+      "guard ${1:condition} else {",
+      "\t${2:return}",
+      "}"
+    ],
+    "description": "Guard early-return"
+  },
+  "enum declaration": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "\t${2:Variant},",
+      "}"
+    ],
+    "description": "Enum declaration"
+  },
+  "impl block": {
+    "prefix": "impl",
+    "body": [
+      "impl ${1:Type} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Impl block"
+  },
+  "derive attribute": {
+    "prefix": "derive",
+    "body": ["derive(${1:Debug, Clone})"],
+    "description": "Derive macro"
+  },
+  "fan out": {
+    "prefix": "fan",
+    "body": [
+      "fan {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Fan-out concurrency block"
+  },
+  "concurrent block": {
+    "prefix": "concurrent",
+    "body": [
+      "concurrent {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Concurrent execution block"
+  },
+  "arena allocator": {
+    "prefix": "arena",
+    "body": [
+      "arena ${1:name} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Arena allocator block"
+  },
+  "try operator": {
+    "prefix": "try",
+    "body": ["try ${1:expr}"],
+    "description": "try error propagation"
+  }
+}

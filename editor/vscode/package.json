@@ -1,0 +1,52 @@
+{
+  "name": "ferrous-wheel",
+  "displayName": "Ferrous Wheel",
+  "description": "Rust-inspired syntax sugar for Go — language support for .fw files",
+  "version": "0.2.0",
+  "publisher": "odvcencio",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:ferrous-wheel"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [{
+      "id": "ferrous-wheel",
+      "aliases": ["Ferrous Wheel", "fw"],
+      "extensions": [".fw"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "ferrous-wheel",
+      "scopeName": "source.fw",
+      "path": "./syntaxes/ferrous-wheel.tmLanguage.json"
+    }],
+    "snippets": [{
+      "language": "ferrous-wheel",
+      "path": "./snippets/ferrous-wheel.json"
+    }],
+    "configuration": {
+      "title": "Ferrous Wheel",
+      "properties": {
+        "ferrous-wheel.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to ferrous-wheel binary (uses PATH if empty)"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver-protocol": "^3.17.5"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^3.0.0"
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  }
+}

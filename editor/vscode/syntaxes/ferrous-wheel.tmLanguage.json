@@ -1,0 +1,262 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Ferrous Wheel",
+  "scopeName": "source.fw",
+  "fileTypes": [".fw"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#fstrings" },
+    { "include": "#strings" },
+    { "include": "#fw-control-keywords" },
+    { "include": "#fw-other-keywords" },
+    { "include": "#fw-concurrency-keywords" },
+    { "include": "#fw-memory-keywords" },
+    { "include": "#fw-macro-operators" },
+    { "include": "#go-keywords" },
+    { "include": "#go-builtins" },
+    { "include": "#go-types" },
+    { "include": "#fw-operators" },
+    { "include": "#go-operators" },
+    { "include": "#numbers" },
+    { "include": "#function-calls" },
+    { "include": "#type-declarations" },
+    { "include": "#package-import" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.fw",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.fw",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+
+    "fstrings": {
+      "name": "string.interpolated.fw",
+      "begin": "\\bf(\")",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.fw" },
+        "1": { "name": "punctuation.definition.string.begin.fw" }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.fw" }
+      },
+      "patterns": [
+        {
+          "name": "meta.interpolation.fw",
+          "begin": "\\{",
+          "beginCaptures": {
+            "0": { "name": "punctuation.section.interpolation.begin.fw" }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": { "name": "punctuation.section.interpolation.end.fw" }
+          },
+          "patterns": [
+            { "include": "#fw-control-keywords" },
+            { "include": "#go-keywords" },
+            { "include": "#go-builtins" },
+            { "include": "#numbers" },
+            { "include": "#strings" }
+          ]
+        },
+        {
+          "name": "constant.character.escape.fw",
+          "match": "\\\\."
+        }
+      ]
+    },
+
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.fw",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.fw",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.raw.fw",
+          "begin": "`",
+          "end": "`"
+        },
+        {
+          "name": "string.quoted.single.rune.fw",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.fw",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+
+    "fw-control-keywords": {
+      "name": "keyword.control.fw",
+      "match": "\\b(let|mut|match|guard|unless|until|repeat|swap|fn|try)\\b"
+    },
+
+    "fw-other-keywords": {
+      "name": "keyword.other.fw",
+      "match": "\\b(enum|derive|impl)\\b"
+    },
+
+    "fw-concurrency-keywords": {
+      "name": "keyword.control.concurrency.fw",
+      "match": "\\b(fan|concurrent|throttle|retry|breaker)\\b"
+    },
+
+    "fw-memory-keywords": {
+      "name": "keyword.control.memory.fw",
+      "match": "\\b(arena|pin|unpin|mmap|packed|vectorize)\\b"
+    },
+
+    "fw-macro-operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.error.fw",
+          "match": "\\b(defer!|select!)\\b"
+        }
+      ]
+    },
+
+    "fw-operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.fw",
+          "match": "\\?\\?"
+        },
+        {
+          "name": "keyword.operator.fw",
+          "match": "\\?\\."
+        },
+        {
+          "name": "keyword.operator.fw",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.fw",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.fw",
+          "match": "=>"
+        }
+      ]
+    },
+
+    "go-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.go.fw",
+          "match": "\\b(break|case|continue|default|defer|else|fallthrough|for|go|goto|if|range|return|select|switch)\\b"
+        },
+        {
+          "name": "keyword.declaration.go.fw",
+          "match": "\\b(chan|const|func|interface|map|package|struct|type|var)\\b"
+        },
+        {
+          "name": "keyword.import.go.fw",
+          "match": "\\b(import)\\b"
+        }
+      ]
+    },
+
+    "go-builtins": {
+      "name": "support.function.builtin.go.fw",
+      "match": "\\b(append|cap|clear|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)\\b"
+    },
+
+    "go-types": {
+      "name": "support.type.go.fw",
+      "match": "\\b(bool|byte|complex64|complex128|error|float32|float64|int|int8|int16|int32|int64|rune|string|uint|uint8|uint16|uint32|uint64|uintptr|any|comparable)\\b"
+    },
+
+    "go-operators": {
+      "name": "keyword.operator.go.fw",
+      "match": "(\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>=|&\\^=|==|!=|<=|>=|&&|\\|\\||<-|:=|\\.\\.\\.|[+\\-*/%&|^<>!~=])"
+    },
+
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.fw",
+          "match": "\\b0[xX][0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.fw",
+          "match": "\\b0[oO][0-7_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.fw",
+          "match": "\\b0[bB][01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.fw",
+          "match": "\\b[0-9][0-9_]*\\.[0-9_]*([eE][+-]?[0-9_]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.fw",
+          "match": "\\b[0-9][0-9_]*\\b"
+        }
+      ]
+    },
+
+    "function-calls": {
+      "name": "entity.name.function.fw",
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()"
+    },
+
+    "type-declarations": {
+      "patterns": [
+        {
+          "name": "entity.name.type.fw",
+          "match": "\\b(type)\\s+([A-Z][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "keyword.declaration.go.fw" },
+            "2": { "name": "entity.name.type.fw" }
+          }
+        },
+        {
+          "name": "entity.name.type.fw",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+
+    "package-import": {
+      "patterns": [
+        {
+          "name": "entity.name.package.fw",
+          "match": "(?<=package\\s)\\b[a-z][a-z0-9_]*\\b"
+        },
+        {
+          "name": "string.quoted.double.import.fw",
+          "begin": "(?<=import\\s)(\")",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.string.begin.fw" }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.fw" }
+          }
+        }
+      ]
+    }
+  }
+}
