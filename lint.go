@@ -571,6 +571,11 @@ func countIdentifierReads(root *gotreesitter.Node, lang *gotreesitter.Language, 
 		if n.Type(lang) == "identifier" && !writeLHS[n] {
 			reads[text(n)]++
 		}
+		// f-strings: identifiers inside {expr} are reads but not separate CST nodes.
+		// Parse the raw token text to extract them.
+		if n.Type(lang) == "fstring" {
+			countFStringReads(text(n), reads)
+		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
 			countReads(n.NamedChild(i))
 		}
@@ -578,6 +583,75 @@ func countIdentifierReads(root *gotreesitter.Node, lang *gotreesitter.Language, 
 	countReads(root)
 
 	return reads
+}
+
+// countFStringReads extracts identifiers from f-string interpolation expressions
+// and counts them as reads. The raw token looks like: f"text {expr} more {expr2}"
+func countFStringReads(raw string, reads map[string]int) {
+	// Strip f" prefix and trailing "
+	if len(raw) < 3 || raw[0] != 'f' || raw[1] != '"' {
+		return
+	}
+	inner := raw[2 : len(raw)-1]
+	depth := 0
+	start := -1
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '{':
+			if depth == 0 {
+				start = i + 1
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && start >= 0 {
+				expr := inner[start:i]
+				// Extract identifiers from the expression.
+				// Simple approach: split on non-identifier chars and count each token
+				// that looks like a Go identifier.
+				extractIdentReads(expr, reads)
+				start = -1
+			}
+		}
+	}
+}
+
+// extractIdentReads scans an expression string for identifier-like tokens and
+// increments their read count. Handles dotted access (a.b.c counts "a"),
+// function calls (foo() counts "foo"), and index expressions.
+func extractIdentReads(expr string, reads map[string]int) {
+	var ident []byte
+	for i := 0; i <= len(expr); i++ {
+		var ch byte
+		if i < len(expr) {
+			ch = expr[i]
+		}
+		isIdentChar := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || (ch >= '0' && ch <= '9' && len(ident) > 0)
+		if isIdentChar {
+			ident = append(ident, ch)
+		} else {
+			if len(ident) > 0 {
+				name := string(ident)
+				// Skip Go keywords and builtins
+				if !isGoKeyword(name) {
+					reads[name]++
+				}
+				ident = ident[:0]
+			}
+		}
+	}
+}
+
+func isGoKeyword(s string) bool {
+	switch s {
+	case "break", "case", "chan", "const", "continue", "default", "defer",
+		"else", "fallthrough", "for", "func", "go", "goto", "if", "import",
+		"interface", "map", "package", "range", "return", "select", "struct",
+		"switch", "type", "var", "true", "false", "nil", "len", "cap",
+		"append", "make", "new", "string", "int", "bool", "error", "fmt":
+		return true
+	}
+	return false
 }
 
 // countIdentifierWrites walks the CST and counts how many times each identifier
