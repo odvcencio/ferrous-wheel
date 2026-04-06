@@ -279,6 +279,9 @@ func validateTryUsage(root *gotreesitter.Node, lang *gotreesitter.Language, src 
 		switch parent.Type(lang) {
 		case "let_declaration", "let_multi_declaration":
 			return parent.ChildByFieldName("value", lang) == n
+		case "expression_statement":
+			// postfix_try (expr?) is allowed as a standalone expression statement
+			return n.Type(lang) == "postfix_try"
 		case "expression_list":
 			site := parent.Parent()
 			if site == nil {
@@ -304,11 +307,18 @@ func validateTryUsage(root *gotreesitter.Node, lang *gotreesitter.Language, src 
 	}
 
 	validateTryNode := func(n *gotreesitter.Node) error {
+		isPostfix := n.Type(lang) == "postfix_try"
 		expr := n.ChildByFieldName("expr", lang)
 		if expr == nil || expr.Type(lang) != "call_expression" {
+			if isPostfix {
+				return fmt.Errorf("? currently only supports direct call expressions")
+			}
 			return fmt.Errorf("try currently only supports direct call expressions")
 		}
 		if !trySiteSupported(n) {
+			if isPostfix {
+				return fmt.Errorf("? is only supported on the right-hand side of let, tuple let, :=, or = assignments, or as a standalone expression statement")
+			}
 			return fmt.Errorf("try is only supported on the right-hand side of let, tuple let, :=, or = assignments")
 		}
 
@@ -337,7 +347,7 @@ func validateTryUsage(root *gotreesitter.Node, lang *gotreesitter.Language, src 
 		if n == nil {
 			return nil
 		}
-		if n.Type(lang) == "error_propagation" {
+		if n.Type(lang) == "error_propagation" || n.Type(lang) == "postfix_try" {
 			if err := validateTryNode(n); err != nil {
 				return err
 			}
@@ -915,7 +925,7 @@ func (t *fwTranspiler) singleTryFromExpressionList(listNode *gotreesitter.Node) 
 		return nil
 	}
 	child := listNode.NamedChild(0)
-	if child == nil || t.nodeType(child) != "error_propagation" {
+	if child == nil || (t.nodeType(child) != "error_propagation" && t.nodeType(child) != "postfix_try") {
 		return nil
 	}
 	return child
@@ -998,6 +1008,8 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitNullCoalesce(n)
 	case "error_propagation":
 		return t.emitErrorProp(n)
+	case "postfix_try":
+		return t.emitPostfixTry(n)
 	case "safe_navigation":
 		return t.emitSafeNav(n)
 	case "lambda_expression":
@@ -1206,7 +1218,7 @@ func (t *fwTranspiler) emitLet(n *gotreesitter.Node) string {
 	name := t.text(nameNode)
 	isMut := t.childByField(n, "mutable") != nil
 
-	if t.nodeType(value) == "error_propagation" {
+	if t.nodeType(value) == "error_propagation" || t.nodeType(value) == "postfix_try" {
 		out := t.emitTryAssignment([]string{name}, ":=", value)
 		t.registerLetBinding(name, t.resolvedType(n), isMut)
 		return out
@@ -1229,7 +1241,7 @@ func (t *fwTranspiler) emitLetMulti(n *gotreesitter.Node) string {
 	}
 	isMut := t.childByField(n, "mutable") != nil
 
-	if t.nodeType(value) == "error_propagation" {
+	if t.nodeType(value) == "error_propagation" || t.nodeType(value) == "postfix_try" {
 		out := t.emitTryAssignment(names, ":=", value)
 		t.registerLetBindings(names, explicitTypes, value, isMut)
 		return out
@@ -1409,10 +1421,10 @@ func (t *fwTranspiler) validateIfExprElse(n *gotreesitter.Node) {
 	}
 }
 
-// validateIfExprNoTry checks that no branch contains error_propagation nodes.
+// validateIfExprNoTry checks that no branch contains error_propagation or postfix_try nodes.
 func (t *fwTranspiler) validateIfExprNoTry(n *gotreesitter.Node) {
 	cons := t.childByField(n, "consequence")
-	if cons != nil && t.containsNodeType(cons, "error_propagation") {
+	if cons != nil && (t.containsNodeType(cons, "error_propagation") || t.containsNodeType(cons, "postfix_try")) {
 		t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
 			"if-expression branch must not contain try (error propagation would return from the IIFE, not the enclosing function)"))
 		return
@@ -1423,7 +1435,7 @@ func (t *fwTranspiler) validateIfExprNoTry(n *gotreesitter.Node) {
 	}
 	if t.nodeType(alt) == "if_statement" {
 		t.validateIfExprNoTry(alt)
-	} else if t.containsNodeType(alt, "error_propagation") {
+	} else if t.containsNodeType(alt, "error_propagation") || t.containsNodeType(alt, "postfix_try") {
 		t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
 			"if-expression branch must not contain try (error propagation would return from the IIFE, not the enclosing function)"))
 	}
@@ -1671,6 +1683,24 @@ func (t *fwTranspiler) emitNullCoalesce(n *gotreesitter.Node) string {
 // try lowering is handled at the statement site after validation.
 func (t *fwTranspiler) emitErrorProp(n *gotreesitter.Node) string {
 	return t.text(n)
+}
+
+// emitPostfixTry handles standalone postfix_try (expr?) when it appears as a bare
+// expression statement rather than inside a let/assignment. It generates a temporary
+// to capture the value and error, then checks and propagates the error.
+func (t *fwTranspiler) emitPostfixTry(n *gotreesitter.Node) string {
+	expr := t.childByField(n, "expr")
+	if expr == nil {
+		return t.text(n)
+	}
+
+	errName := t.nextTryErrName()
+	callText := t.emit(expr)
+	var b strings.Builder
+	fmt.Fprintf(&b, "_fwVal, %s := %s\n", errName, callText)
+	fmt.Fprintf(&b, "if %s != nil {\n\t%s\n}\n", errName, t.tryReturnStatement(errName))
+	b.WriteString("_ = _fwVal")
+	return b.String()
 }
 
 func (t *fwTranspiler) emitCall(n *gotreesitter.Node) string {

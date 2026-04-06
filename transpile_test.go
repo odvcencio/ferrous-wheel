@@ -1956,3 +1956,62 @@ func main() error {
 		t.Fatal("expected error for try inside if-expression branch")
 	}
 }
+
+func TestTranspilePostfixTry(t *testing.T) {
+	source := []byte(`package main
+
+import "os"
+
+func main() error {
+	let f = os.Open("test")?
+	_ = f
+	return nil
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "!= nil") {
+		t.Error("expected nil check for error propagation")
+	}
+	if !strings.Contains(goCode, "return") {
+		t.Error("expected return statement for error propagation")
+	}
+}
+
+func TestTranspilePostfixTryCoexistsWithPrefixTry(t *testing.T) {
+	source := []byte(`package main
+
+import "os"
+
+func main() error {
+	let f = try os.Open("test")
+	_ = f
+	return nil
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "!= nil") {
+		t.Error("prefix try should still work")
+	}
+}
+
+func TestTranspilePostfixTryInNonErrorFuncErrors(t *testing.T) {
+	source := []byte(`package main
+
+import "os"
+
+func main() {
+	let f = os.Open("test")?
+	_ = f
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected error: ? in function that doesn't return error")
+	}
+}
