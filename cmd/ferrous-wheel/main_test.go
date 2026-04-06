@@ -297,6 +297,49 @@ func TestCLIFmtWriteInPlace(t *testing.T) {
 	}
 }
 
+func TestCLILint(t *testing.T) {
+	tmpDir := t.TempDir()
+	fwFile := filepath.Join(tmpDir, "test.fw")
+	os.WriteFile(fwFile, []byte("package main\n\nfunc main() {\n\tlet x = 1\n}\n"), 0644)
+
+	var stderr bytes.Buffer
+	code := runCLI([]string{"ferrous-wheel", "lint", fwFile}, &stderr)
+	// Should have warnings (unused-let) but exit 0 (warnings don't block)
+	if code != 0 {
+		t.Errorf("expected exit 0 for warnings only, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "unused-let") {
+		t.Error("expected unused-let warning in output")
+	}
+}
+
+func TestCLILintError(t *testing.T) {
+	tmpDir := t.TempDir()
+	fwFile := filepath.Join(tmpDir, "test.fw")
+	os.WriteFile(fwFile, []byte("package main\n\nfunc main() {\n\tlet x = if true { 1 }\n\t_ = x\n}\n"), 0644)
+
+	var stderr bytes.Buffer
+	code := runCLI([]string{"ferrous-wheel", "lint", fwFile}, &stderr)
+	// Should exit 1 because missing-else-if-expr is a LintError
+	if code != 1 {
+		t.Errorf("expected exit 1 for lint errors, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "missing-else-if-expr") {
+		t.Error("expected missing-else-if-expr error in output")
+	}
+}
+
+func TestCLILintNoArgs(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runCLI([]string{"ferrous-wheel", "lint"}, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "Usage:") {
+		t.Error("expected usage message")
+	}
+}
+
 func TestRunCLIErrors(t *testing.T) {
 	tests := []struct {
 		name       string

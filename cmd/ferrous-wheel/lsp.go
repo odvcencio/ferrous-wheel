@@ -410,8 +410,39 @@ func (s *lspServer) publishDiagnostics(uri string) {
 	path := doc.path
 	s.mu.Unlock()
 
+	// Run lint and collect diagnostics
+	lintDiags, lintErr := ferrouswheel.Lint([]byte(text))
+	if lintErr == nil {
+		for _, ld := range lintDiags {
+			line := ld.Line - 1
+			col := ld.Col - 1
+			if line < 0 {
+				line = 0
+			}
+			if col < 0 {
+				col = 0
+			}
+			sev := 3 // info
+			switch ld.Severity {
+			case ferrouswheel.LintError:
+				sev = 1
+			case ferrouswheel.LintWarning:
+				sev = 2
+			}
+			diags = append(diags, diagnostic{
+				Range: lspRange{
+					Start: position{Line: line, Character: col},
+					End:   position{Line: line, Character: col + 1},
+				},
+				Message:  fmt.Sprintf("[%s] %s", ld.Rule, ld.Message),
+				Severity: sev,
+			})
+		}
+	}
+
 	_, warnings, err := ferrouswheel.TranspileWithOptions([]byte(text), ferrouswheel.TranspileOptions{
 		SourceFile: path,
+		LintRan:    true,
 	})
 	if err != nil {
 		diags = append(diags, diagnostic{

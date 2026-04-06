@@ -427,6 +427,7 @@ func validateNoUnparsedText(root *gotreesitter.Node, src []byte) error {
 // TranspileOptions configures the transpilation process.
 type TranspileOptions struct {
 	SourceFile string // original .fw filename for //line directives
+	LintRan    bool   // true if lint already ran; skip duplicate checks (e.g., if-expr else)
 }
 
 // Warning is a non-fatal issue encountered during transpilation.
@@ -482,7 +483,7 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 	if sourceLabel != "" {
 		sourceLabel = filepath.Base(sourceLabel)
 	}
-	t := &fwTranspiler{src: source, lang: lang, sourceFile: sourceLabel, typeEnv: env}
+	t := &fwTranspiler{src: source, lang: lang, sourceFile: sourceLabel, typeEnv: env, lintRan: opts.LintRan}
 
 	result := t.emit(root)
 
@@ -522,6 +523,7 @@ type fwTranspiler struct {
 	needsThrottle   bool
 	needsFanIn      bool
 	needsUnsafeCast bool
+	lintRan         bool   // true if lint already ran; skip duplicate checks
 	implReceiver    string // non-empty when inside an impl block
 	lastPipeValue   string // set by emitPipeline for selector reconstruction
 	tryTargets      []tryTarget
@@ -1409,6 +1411,11 @@ func (t *fwTranspiler) emitIfExpression(n *gotreesitter.Node) string {
 // validateIfExprElse walks an if-expression chain and errors if any terminal
 // branch is missing an else clause.
 func (t *fwTranspiler) validateIfExprElse(n *gotreesitter.Node) {
+	// When lint has already run, it owns the missing-else-if-expr diagnostic.
+	// Skip the transpiler's duplicate check.
+	if t.lintRan {
+		return
+	}
 	alt := t.childByField(n, "alternative")
 	if alt == nil {
 		t.transpileErrors = append(t.transpileErrors, fmt.Errorf(

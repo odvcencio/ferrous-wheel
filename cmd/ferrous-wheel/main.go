@@ -28,6 +28,7 @@ const (
 	usageBuild = "Usage: ferrous-wheel build <file.fw> [-o output]\n"
 	usageEmit  = "Usage: ferrous-wheel emit <file.fw>\n"
 	usageFmt   = "Usage: ferrous-wheel fmt [--check|-w] <file.fw>...\n"
+	usageLint  = "Usage: ferrous-wheel lint <file.fw>...\n"
 )
 
 type cliUsageError string
@@ -81,6 +82,8 @@ func runCLI(args []string, stderr io.Writer) int {
 		return runLSP()
 	case "fmt":
 		return runFmt(args[2:], stderr)
+	case "lint":
+		return runLint(args[2:], stderr)
 	default:
 		fmt.Fprintf(stderr, "Unknown command: %s\n%s", args[1], usageMain)
 		return 1
@@ -125,13 +128,22 @@ func buildArgs(args []string) (string, string, error) {
 }
 
 // transpileFile reads a .fw file and returns the generated Go source.
+// Lint runs automatically before transpilation. LintError diagnostics block
+// transpilation; warnings and info are printed to stderr but don't block.
 func transpileFile(path string) (string, []ferrouswheel.Warning, error) {
 	source, err := os.ReadFile(path)
 	if err != nil {
 		return "", nil, fmt.Errorf("read %s: %w", path, err)
 	}
+
+	// Run lint before transpilation
+	if lintFile(path, source, os.Stderr) {
+		return "", nil, fmt.Errorf("lint errors found in %s", path)
+	}
+
 	goCode, warnings, err := ferrouswheel.TranspileWithOptions(source, ferrouswheel.TranspileOptions{
 		SourceFile: path,
+		LintRan:    true,
 	})
 	if err != nil {
 		return "", nil, fmt.Errorf("transpile %s: %w", path, err)
@@ -338,4 +350,57 @@ func runFmt(args []string, stderr io.Writer) int {
 	}
 
 	return exitCode
+}
+
+// runLint implements the lint subcommand.
+func runLint(args []string, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprint(stderr, usageLint)
+		return 1
+	}
+
+	hasError := false
+	for _, path := range args {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		diags, err := ferrouswheel.Lint(source)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: lint %s: %v\n", path, err)
+			return 1
+		}
+		for _, d := range diags {
+			fmt.Fprintf(stderr, "%s:%d:%d: [%s] %s: %s\n",
+				path, d.Line, d.Col, d.Severity, d.Rule, d.Message)
+			if d.Severity == ferrouswheel.LintError {
+				hasError = true
+			}
+		}
+	}
+	if hasError {
+		return 1
+	}
+	return 0
+}
+
+// lintFile runs lint on a source file and prints diagnostics. Returns true if
+// any LintError diagnostics were found (which should block transpilation).
+func lintFile(path string, source []byte, stderr io.Writer) bool {
+	diags, err := ferrouswheel.Lint(source)
+	if err != nil {
+		// Lint errors are non-fatal for the pipeline; just warn.
+		fmt.Fprintf(stderr, "lint: %s: %v\n", path, err)
+		return false
+	}
+	hasError := false
+	for _, d := range diags {
+		fmt.Fprintf(stderr, "%s:%d:%d: [%s] %s: %s\n",
+			path, d.Line, d.Col, d.Severity, d.Rule, d.Message)
+		if d.Severity == ferrouswheel.LintError {
+			hasError = true
+		}
+	}
+	return hasError
 }

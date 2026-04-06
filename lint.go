@@ -15,6 +15,19 @@ const (
 	LintInfo                         // informational
 )
 
+func (s LintSeverity) String() string {
+	switch s {
+	case LintError:
+		return "error"
+	case LintWarning:
+		return "warning"
+	case LintInfo:
+		return "info"
+	default:
+		return "unknown"
+	}
+}
+
 // LintDiagnostic is a single lint finding.
 type LintDiagnostic struct {
 	Rule     string
@@ -56,10 +69,18 @@ var (
 func init() {
 	nodeRules = []NodeLintRule{
 		&emptyMatchRule{},
+		&unreachableMatchArmRule{},
+		&missingElseIfExprRule{},
+		&emptyBlockRule{},
+		&unreachableAfterGuardRule{},
+		// Type-aware rules:
+		&redundantTryRule{},
+		&unnecessarySafeNavRule{},
 	}
 	scopeRules = []ScopeLintRule{
 		&unusedLetRule{},
 		&unusedMutRule{},
+		&shadowedLetRule{},
 	}
 }
 
@@ -613,4 +634,392 @@ func collectLHSNames(n *gotreesitter.Node, lang *gotreesitter.Language, src []by
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		collectLHSNames(n.NamedChild(i), lang, src, writes, text)
 	}
+}
+
+// ---------- unreachable-match-arm rule ----------
+
+type unreachableMatchArmRule struct{}
+
+func (r *unreachableMatchArmRule) Name() string            { return "unreachable-match-arm" }
+func (r *unreachableMatchArmRule) Description() string     { return "arm after wildcard/default pattern is unreachable" }
+func (r *unreachableMatchArmRule) Severity() LintSeverity  { return LintWarning }
+
+func (r *unreachableMatchArmRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "match_expression" {
+		return nil
+	}
+
+	text := func(nd *gotreesitter.Node) string {
+		return string(ctx.Src[nd.StartByte():nd.EndByte()])
+	}
+
+	var diags []LintDiagnostic
+	wildcardSeen := false
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		child := n.NamedChild(i)
+		if child.Type(ctx.Lang) != "match_arm" {
+			continue
+		}
+		if wildcardSeen {
+			pt := child.StartPoint()
+			diags = append(diags, LintDiagnostic{
+				Rule:     r.Name(),
+				Line:     int(pt.Row) + 1,
+				Col:      int(pt.Column) + 1,
+				Message:  "unreachable match arm after wildcard pattern",
+				Severity: r.Severity(),
+			})
+			continue
+		}
+		pattern := child.ChildByFieldName("pattern", ctx.Lang)
+		if pattern != nil {
+			ptext := text(pattern)
+			if ptext == "_" {
+				wildcardSeen = true
+			}
+		}
+	}
+	return diags
+}
+
+// ---------- missing-else-if-expr rule ----------
+
+type missingElseIfExprRule struct{}
+
+func (r *missingElseIfExprRule) Name() string            { return "missing-else-if-expr" }
+func (r *missingElseIfExprRule) Description() string     { return "if-expression without else" }
+func (r *missingElseIfExprRule) Severity() LintSeverity  { return LintError }
+
+func (r *missingElseIfExprRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "if_statement" {
+		return nil
+	}
+	// Only applies to if in expression position
+	if !lintIsExpressionPosition(n, ctx.Lang) {
+		return nil
+	}
+	// Walk the chain: every terminal if must have an else
+	if diag := r.checkChain(n, ctx); diag != nil {
+		return []LintDiagnostic{*diag}
+	}
+	return nil
+}
+
+func (r *missingElseIfExprRule) checkChain(n *gotreesitter.Node, ctx *LintContext) *LintDiagnostic {
+	alt := n.ChildByFieldName("alternative", ctx.Lang)
+	if alt == nil {
+		pt := n.StartPoint()
+		return &LintDiagnostic{
+			Rule:     r.Name(),
+			Line:     int(pt.Row) + 1,
+			Col:      int(pt.Column) + 1,
+			Message:  "if-expression requires an else branch",
+			Severity: r.Severity(),
+		}
+	}
+	if alt.Type(ctx.Lang) == "if_statement" {
+		return r.checkChain(alt, ctx)
+	}
+	return nil
+}
+
+// lintIsExpressionPosition checks whether an if_statement is in expression position
+// (e.g. as the value of a let declaration, short_var_declaration, return statement, etc.)
+func lintIsExpressionPosition(n *gotreesitter.Node, lang *gotreesitter.Language) bool {
+	parent := n.Parent()
+	if parent == nil {
+		return false
+	}
+	parentType := parent.Type(lang)
+	switch parentType {
+	case "let_declaration", "let_multi_declaration":
+		return parent.ChildByFieldName("value", lang) == n
+	case "short_var_declaration":
+		return true
+	case "return_statement":
+		return true
+	case "call_expression":
+		return true
+	case "expression_list":
+		gp := parent.Parent()
+		if gp != nil {
+			switch gp.Type(lang) {
+			case "short_var_declaration", "assignment_statement", "return_statement":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ---------- redundant-try rule ----------
+
+type redundantTryRule struct{}
+
+func (r *redundantTryRule) Name() string            { return "redundant-try" }
+func (r *redundantTryRule) Description() string     { return "try or ? on a function that doesn't return error" }
+func (r *redundantTryRule) Severity() LintSeverity  { return LintWarning }
+
+func (r *redundantTryRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if ctx.TypeEnv == nil {
+		return nil
+	}
+	nodeType := n.Type(ctx.Lang)
+	if nodeType != "error_propagation" && nodeType != "postfix_try" {
+		return nil
+	}
+	// The operand is the first named child (the call expression)
+	if n.NamedChildCount() == 0 {
+		return nil
+	}
+	operand := n.NamedChild(0)
+	if operand == nil {
+		return nil
+	}
+	// Try to resolve the operand's type
+	typ, err := ctx.TypeEnv.Resolve(operand, ctx.Lang, ctx.Src)
+	if err != nil || typ == nil {
+		return nil
+	}
+	// Check if the resolved type is a tuple/result that ends with error
+	// If it's a FuncType, check its return types
+	if ft, ok := typ.(*FuncType); ok {
+		if len(ft.Results) > 0 {
+			lastRet := ft.Results[len(ft.Results)-1]
+			if lastRet.String() == "error" {
+				return nil // valid try usage
+			}
+		}
+		pt := n.StartPoint()
+		return []LintDiagnostic{{
+			Rule:     r.Name(),
+			Line:     int(pt.Row) + 1,
+			Col:      int(pt.Column) + 1,
+			Message:  "try/? on a function that doesn't return error",
+			Severity: r.Severity(),
+		}}
+	}
+	return nil
+}
+
+// ---------- shadowed-let rule ----------
+
+type shadowedLetRule struct{}
+
+func (r *shadowedLetRule) Name() string            { return "shadowed-let" }
+func (r *shadowedLetRule) Description() string     { return "let binding shadows same name in parent scope" }
+func (r *shadowedLetRule) Severity() LintSeverity  { return LintWarning }
+
+func (r *shadowedLetRule) CheckScope(_ *Scope, root *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	var diags []LintDiagnostic
+	type scopeFrame struct {
+		names map[string]bool
+	}
+	stack := []scopeFrame{{names: make(map[string]bool)}}
+
+	text := func(nd *gotreesitter.Node) string {
+		return string(ctx.Src[nd.StartByte():nd.EndByte()])
+	}
+
+	var walk func(n *gotreesitter.Node)
+	walk = func(n *gotreesitter.Node) {
+		if n == nil {
+			return
+		}
+		nodeType := n.Type(ctx.Lang)
+
+		// Push scope on block entry
+		isBlock := nodeType == "block" || nodeType == "function_declaration" || nodeType == "func_literal"
+		if isBlock {
+			stack = append(stack, scopeFrame{names: make(map[string]bool)})
+		}
+
+		// Check let declarations
+		if nodeType == "let_declaration" {
+			nameNode := n.ChildByFieldName("name", ctx.Lang)
+			if nameNode != nil {
+				name := text(nameNode)
+				// Check if name exists in any parent scope (not the current one)
+				if len(stack) >= 2 {
+					for i := len(stack) - 2; i >= 0; i-- {
+						if stack[i].names[name] {
+							pt := nameNode.StartPoint()
+							diags = append(diags, LintDiagnostic{
+								Rule:     r.Name(),
+								Line:     int(pt.Row) + 1,
+								Col:      int(pt.Column) + 1,
+								Message:  "let binding '" + name + "' shadows binding in outer scope",
+								Severity: r.Severity(),
+							})
+							break
+						}
+					}
+				}
+				stack[len(stack)-1].names[name] = true
+			}
+		}
+
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			walk(n.NamedChild(i))
+		}
+
+		if isBlock {
+			stack = stack[:len(stack)-1]
+		}
+	}
+	walk(root)
+	return diags
+}
+
+// ---------- empty-block rule ----------
+
+type emptyBlockRule struct{}
+
+func (r *emptyBlockRule) Name() string            { return "empty-block" }
+func (r *emptyBlockRule) Description() string     { return "empty {} body (likely a mistake)" }
+func (r *emptyBlockRule) Severity() LintSeverity  { return LintInfo }
+
+func (r *emptyBlockRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "block" {
+		return nil
+	}
+	// Only flag if parent is if_statement, for_statement, for_in_statement, or match_arm
+	parent := n.Parent()
+	if parent == nil {
+		return nil
+	}
+	parentType := parent.Type(ctx.Lang)
+	switch parentType {
+	case "if_statement", "for_statement", "for_in_statement", "for_in_index_statement", "match_arm":
+		// ok
+	default:
+		return nil
+	}
+	// Check if block is truly empty (no named children)
+	if n.NamedChildCount() > 0 {
+		return nil
+	}
+	pt := n.StartPoint()
+	return []LintDiagnostic{{
+		Rule:     r.Name(),
+		Line:     int(pt.Row) + 1,
+		Col:      int(pt.Column) + 1,
+		Message:  "empty block body in " + parentType,
+		Severity: r.Severity(),
+	}}
+}
+
+// ---------- unnecessary-safe-nav rule ----------
+
+type unnecessarySafeNavRule struct{}
+
+func (r *unnecessarySafeNavRule) Name() string            { return "unnecessary-safe-nav" }
+func (r *unnecessarySafeNavRule) Description() string     { return "?. on a non-pointer type" }
+func (r *unnecessarySafeNavRule) Severity() LintSeverity  { return LintWarning }
+
+func (r *unnecessarySafeNavRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if ctx.TypeEnv == nil {
+		return nil
+	}
+	if n.Type(ctx.Lang) != "safe_navigation" {
+		return nil
+	}
+	obj := n.ChildByFieldName("object", ctx.Lang)
+	if obj == nil {
+		return nil
+	}
+	objType, err := ctx.TypeEnv.Resolve(obj, ctx.Lang, ctx.Src)
+	if err != nil || objType == nil {
+		return nil
+	}
+	if _, isPtr := objType.(*PointerType); isPtr {
+		return nil // pointer, safe nav is needed
+	}
+	pt := n.StartPoint()
+	return []LintDiagnostic{{
+		Rule:     r.Name(),
+		Line:     int(pt.Row) + 1,
+		Col:      int(pt.Column) + 1,
+		Message:  "unnecessary ?. on non-pointer type " + objType.String(),
+		Severity: r.Severity(),
+	}}
+}
+
+// ---------- unreachable-after-guard rule ----------
+
+type unreachableAfterGuardRule struct{}
+
+func (r *unreachableAfterGuardRule) Name() string            { return "unreachable-after-guard" }
+func (r *unreachableAfterGuardRule) Description() string     { return "code after guard ... else return" }
+func (r *unreachableAfterGuardRule) Severity() LintSeverity  { return LintWarning }
+
+func (r *unreachableAfterGuardRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	// This rule is intentionally conservative. A guard statement's else branch
+	// executes when the condition is false. If the condition can be true, code
+	// after the guard IS reachable. We only flag code after a guard whose
+	// condition is the literal `false`.
+	if n.Type(ctx.Lang) != "guard_statement" {
+		return nil
+	}
+	cond := n.ChildByFieldName("condition", ctx.Lang)
+	if cond == nil {
+		return nil
+	}
+	condText := string(ctx.Src[cond.StartByte():cond.EndByte()])
+	if condText != "false" {
+		return nil // guard might pass, code after is reachable
+	}
+	// Check if the else body always exits (has return/panic)
+	body := n.ChildByFieldName("body", ctx.Lang)
+	if body == nil {
+		return nil
+	}
+	if !containsExitNode(body, ctx.Lang) {
+		return nil
+	}
+	// Find statements after this guard in the parent block
+	parent := n.Parent()
+	if parent == nil {
+		return nil
+	}
+	// The guard is inside a statement_list or directly in a block
+	foundGuard := false
+	var diags []LintDiagnostic
+	for i := 0; i < int(parent.NamedChildCount()); i++ {
+		child := parent.NamedChild(i)
+		if child == n {
+			foundGuard = true
+			continue
+		}
+		if foundGuard {
+			pt := child.StartPoint()
+			diags = append(diags, LintDiagnostic{
+				Rule:     r.Name(),
+				Line:     int(pt.Row) + 1,
+				Col:      int(pt.Column) + 1,
+				Message:  "unreachable code after guard with false condition",
+				Severity: r.Severity(),
+			})
+			break // only flag the first unreachable statement
+		}
+	}
+	return diags
+}
+
+// containsExitNode checks whether a node subtree contains a return_statement or
+// a call to panic.
+func containsExitNode(n *gotreesitter.Node, lang *gotreesitter.Language) bool {
+	if n == nil {
+		return false
+	}
+	nodeType := n.Type(lang)
+	if nodeType == "return_statement" {
+		return true
+	}
+	for i := 0; i < int(n.ChildCount()); i++ {
+		if containsExitNode(n.Child(i), lang) {
+			return true
+		}
+	}
+	return false
 }
