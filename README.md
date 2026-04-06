@@ -2,27 +2,27 @@
 
 Rust-inspired syntax sugar, low-level memory primitives, and concurrency patterns for Go. Generic enums, `derive`, `impl`, and dozens of other language features compile to standard Go. No runtime library, no CGO.
 
-Built on [gotreesitter](https://github.com/odvcencio/gotreesitter)'s `grammargen` — a pure-Go grammar generator with production-grade Go grammar support (100% parity with tree-sitter's C implementation). Inspired by [dingo](https://github.com/MadAppGang/dingo) by MadAppGang — this is a separate project exploring similar ideas through grammar composition.
+Built on [gotreesitter](https://github.com/odvcencio/gotreesitter)'s `grammargen` — a pure-Go grammar generator with production-grade Go grammar support (100% parity with tree-sitter's C implementation). Original idea inspired by [dingo](https://github.com/MadAppGang/dingo).
 
 ## Quick taste
 
 ```fw
 package main
 
-import "fmt"
+import (
+    "fmt"
+    "os"
+)
 
 enum Color { Red, Green, Blue(int) }
 
 derive Stringer for Color
 
-impl Color {
-    fn describe(self) {
-        match self.tag {
-            0 => fmt.Println("warm"),
-            1 => fmt.Println("natural"),
-            2 => fmt.Println("cool"),
-        }
-    }
+func loadConfig(path string) (string, error) {
+    let data = os.ReadFile(path)?
+    let mut result = if len(data) > 0 { string(data) } else { "default" }
+    result = fmt.Sprintf("[config] %s", result)
+    return result, nil
 }
 
 func main() {
@@ -48,15 +48,17 @@ go install github.com/odvcencio/ferrous-wheel/cmd/ferrous-wheel@latest
 ## Usage
 
 ```bash
-ferrous-wheel emit myfile.fw > myfile_generated.go  # transpile to Go on stdout
-ferrous-wheel run myfile.fw                         # transpile + execute
+ferrous-wheel emit  myfile.fw                      # transpile to Go on stdout
+ferrous-wheel run   myfile.fw                      # transpile + execute
 ferrous-wheel build myfile.fw -o dist/myapp        # compile a native binary
-go run myfile_generated.go                         # or run the emitted Go directly
+ferrous-wheel fmt   myfile.fw                      # format .fw source (stdout)
+ferrous-wheel fmt   -w myfile.fw                   # format in-place
+ferrous-wheel fmt   --check myfile.fw              # check formatting (CI)
+ferrous-wheel lint  myfile.fw                      # run lint rules
+ferrous-wheel lsp                                  # start language server
 ```
 
-`emit` writes standard Go source to stdout with a generated-file header, which makes it easy to inspect, diff, pipe through `gofmt`, or check into a build artifact directory.
-
-`build` accepts `-o` for the output path, rejects malformed extra arguments, and creates missing parent directories for nested output paths such as `dist/myapp`.
+`emit` writes standard Go source to stdout with a generated-file header. `build` accepts `-o` for the output path. `fmt` formats `.fw` source files (tabs, operator spacing, match arm alignment). `lint` runs 10 built-in rules and reports diagnostics — errors block transpilation, warnings don't.
 
 ---
 
@@ -203,14 +205,17 @@ func process(user *User) {
 
 ## Expressions and bindings
 
-### Let bindings
+### Let bindings — immutable by default
 
 ```fw
-let x = 42
+let x = 42                                      // immutable — reassignment is a compile error
+let mut counter = 0                              // mutable — reassignment allowed
 let name = "Alice"
 let (host, port) = parseAddr("localhost:8080")
-let (user, err) = db.FindUser(id)
+let mut (a, b) = getCoords()                    // mutable multi-binding
 ```
+
+Go-native `:=` and `var` remain unrestricted. Immutability is a compile-time check — both `let` and `let mut` emit `:=` in Go.
 
 ### Lambdas
 
@@ -253,17 +258,26 @@ let label = count > 0 ? "items" : "empty"
 let status = connected ? (healthy ? "ok" : "degraded") : "offline"
 ```
 
+### If-expressions
+
+```fw
+let x = if cond { a } else { b }
+let y = if n > 0 { "positive" } else if n == 0 { "zero" } else { "negative" }
+```
+
+`if`/`else` in expression position (let RHS, return, call args) compiles to an IIFE. `else` is required. `try`/`?` inside branches is disallowed (would return from the IIFE, not the enclosing function).
+
 ### Error propagation
 
 ```fw
 func readData(path string) ([]byte, error) {
-    let file = try os.Open(path)
-    let data = try io.ReadAll(file)
+    let file = try os.Open(path)         // prefix try
+    let data = io.ReadAll(file)?          // postfix ?
     return data, nil
 }
 ```
 
-`try` is currently supported on the right-hand side of `let`, tuple `let`, `:=`, and `=` inside callables that return a trailing `error`. Inside `retry`, the propagated error feeds the retry loop instead of returning from the outer function.
+Both `try` (prefix) and `?` (postfix) strip the error from `(T, error)` and propagate on failure. Use `try` for statement-level readability, `?` for inline/chained expressions. The enclosing function must return `error`.
 
 ### List comprehensions
 
@@ -631,14 +645,17 @@ func processCSV(path string) []Record {
 ## Design notes
 
 - All output is standard Go. No runtime library, no hidden dependencies.
+- `let` bindings are immutable by default; `let mut` opts into reassignment. Go-native `:=`/`var` remain unrestricted.
+- Bidirectional type inference with constraint solving resolves concrete types through FW constructs (ternary, match, if-expressions, lambdas, pipelines). `interface{}` in generated code only appears when the source actually uses `any`.
+- Lambda parameter types are inferred from call-site context — `Map(items, fn(x) x * 2)` infers `x` as `int` from `Map`'s signature.
 - Generic support covers plain Go generics plus FW-native `enum`, `derive`, and `impl` constructs.
-- `??` uses `reflect.ValueOf` zero-value checks — works with all types.
+- `??` uses typed zero-value checks when the type is resolved; falls back to `reflect.ValueOf` only when type information is unavailable.
 - `match` is exhaustive at runtime — unmatched values panic.
-- `?.` uses reflection for field access on pointer, interface, and struct values.
-- `arena` generates bump-allocation helpers; ordinary allocations are unaffected unless you call those helpers directly.
-- Built-in `Result` and `Option` helpers are injected only when actually used, and helper detection is based on generated Go structure rather than string matching.
-- Concurrency primitives compile to Go patterns such as `sync.WaitGroup`, `select`, helper functions, and channels, with validation for unsupported block shapes.
-- `mmap` blocks currently validate `[]byte` targets before code generation.
+- `?.` uses direct field access when the object type is resolved; falls back to reflection only for unresolved types.
+- Built-in `Result` and `Option` helpers are injected only when actually used.
+- 10 built-in lint rules run automatically before transpilation. Errors block, warnings report.
+- Concurrency primitives compile to Go patterns (`sync.WaitGroup`, `select`, channels).
+- `arena` generates bump-allocation helpers; `mmap` validates `[]byte` targets.
 - Ferrous Wheel feature keywords are parsed contextually inside `.fw` files.
 - Auto-injected imports: `fmt`, `reflect`, `unsafe`, `runtime`, `os`, `syscall`, `sync`, `time` — only when the corresponding feature is used.
 
