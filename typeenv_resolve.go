@@ -388,6 +388,25 @@ func (e *TypeEnv) Resolve(n *gotreesitter.Node, lang *gotreesitter.Language, src
 	}
 }
 
+// ResolveWithExpected resolves the type of expression n, optionally using expected
+// type to guide inference (checking mode). When expected is nil, behaves like Resolve.
+func (e *TypeEnv) ResolveWithExpected(n *gotreesitter.Node, lang *gotreesitter.Language, src []byte, expected Type) (Type, error) {
+	// First try normal resolution
+	typ, err := e.Resolve(n, lang, src)
+	if err == nil && typ != nil {
+		// If we have an expected type and an inference context, add constraint
+		if expected != nil && e.InferCtx != nil {
+			UnifyWithContext(e.InferCtx, typ, expected)
+		}
+		return typ, nil
+	}
+	// If normal resolution failed but we have an expected type, use it
+	if expected != nil {
+		return expected, nil
+	}
+	return typ, err
+}
+
 // MustResolve is like Resolve but formats error with source location.
 func (e *TypeEnv) MustResolve(n *gotreesitter.Node, lang *gotreesitter.Language, src []byte) (Type, error) {
 	typ, err := e.Resolve(n, lang, src)

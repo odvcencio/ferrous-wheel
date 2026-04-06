@@ -801,6 +801,13 @@ func parseTypeString(s string) Type {
 		return &ChanType{Elem: parseTypeString(s[4:]), Dir: ChanBidi}
 	}
 
+	// Func type: func(T1, T2) R or func(T1, T2) (R1, R2)
+	if strings.HasPrefix(s, "func(") {
+		if ft := parseFuncTypeString(s); ft != nil {
+			return ft
+		}
+	}
+
 	if base, args, ok := splitGenericTypeString(s); ok {
 		typeArgs := make([]Type, 0, len(args))
 		for _, arg := range args {
@@ -818,6 +825,98 @@ func parseTypeString(s string) Type {
 	}
 
 	return &NamedType{Name: s}
+}
+
+// parseFuncTypeString parses "func(T1, T2) R" into a *FuncType.
+// Handles func(), func(T), func(T1, T2), func(T) R, func(T1, T2) (R1, R2).
+func parseFuncTypeString(s string) *FuncType {
+	if !strings.HasPrefix(s, "func(") {
+		return nil
+	}
+
+	// Find the matching closing paren for the parameter list.
+	depth := 0
+	paramEnd := -1
+	for i := 4; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				paramEnd = i
+				break
+			}
+		}
+		if paramEnd >= 0 {
+			break
+		}
+	}
+	if paramEnd < 0 {
+		return nil
+	}
+
+	// Parse parameter types
+	paramStr := strings.TrimSpace(s[5:paramEnd])
+	var params []Type
+	if paramStr != "" {
+		paramParts := splitTypeList(paramStr)
+		for _, part := range paramParts {
+			pt := parseTypeString(strings.TrimSpace(part))
+			if pt == nil {
+				return nil
+			}
+			params = append(params, pt)
+		}
+	}
+
+	// Parse result types
+	resultStr := strings.TrimSpace(s[paramEnd+1:])
+	var results []Type
+	if resultStr != "" {
+		if strings.HasPrefix(resultStr, "(") && strings.HasSuffix(resultStr, ")") {
+			// Multiple return types: (R1, R2)
+			inner := resultStr[1 : len(resultStr)-1]
+			parts := splitTypeList(inner)
+			for _, part := range parts {
+				rt := parseTypeString(strings.TrimSpace(part))
+				if rt == nil {
+					return nil
+				}
+				results = append(results, rt)
+			}
+		} else {
+			rt := parseTypeString(resultStr)
+			if rt == nil {
+				return nil
+			}
+			results = []Type{rt}
+		}
+	}
+
+	return &FuncType{Params: params, Results: results}
+}
+
+// splitTypeList splits a comma-separated type list, respecting nested brackets and parens.
+func splitTypeList(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
 }
 
 func isBuiltinTypeName(s string) bool {

@@ -2015,3 +2015,36 @@ func main() {
 		t.Fatal("expected error: ? in function that doesn't return error")
 	}
 }
+
+func TestTranspileLambdaInferFromCallContext(t *testing.T) {
+	source := []byte(`package main
+
+func Map(items []int, f func(int) int) []int {
+	result := make([]int, len(items))
+	for i, v := range items {
+		result[i] = f(v)
+	}
+	return result
+}
+
+func main() {
+	items := []int{1, 2, 3}
+	result := Map(items, fn(x) x * 2)
+	_ = result
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+	// Should NOT contain interface{} for the lambda
+	if strings.Contains(goCode, "interface{}") {
+		t.Error("lambda type should be inferred, not interface{}")
+	}
+	// Should contain typed lambda
+	if !strings.Contains(goCode, "func(x int) int") {
+		t.Logf("Go:\n%s", goCode)
+		t.Error("expected fully typed lambda with inferred types")
+	}
+}

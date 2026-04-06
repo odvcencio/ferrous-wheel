@@ -1,6 +1,10 @@
 package ferrouswheel
 
-import "testing"
+import (
+	"testing"
+
+	gotreesitter "github.com/odvcencio/gotreesitter"
+)
 
 func TestInferenceContextBasic(t *testing.T) {
 	ctx := NewInferenceContext()
@@ -171,5 +175,149 @@ func TestInferenceContextFreshIDs(t *testing.T) {
 
 	if a.ID == b.ID || b.ID == c.ID || a.ID == c.ID {
 		t.Error("Fresh should produce unique IDs")
+	}
+}
+
+func TestResolveWithExpectedBasic(t *testing.T) {
+	env := NewTypeEnv()
+	env.InferCtx = NewInferenceContext()
+	env.RegisterVar("x", Primitive("int"))
+
+	lang, err := GetFWLanguage()
+	if err != nil {
+		t.Fatalf("get language: %v", err)
+	}
+	parser := gotreesitter.NewParser(lang)
+	src := []byte(`package main
+func main() {
+	_ = x
+}
+`)
+	tree, err := parser.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Find the identifier "x" node
+	root := tree.RootNode()
+	var xNode *gotreesitter.Node
+	var walk func(*gotreesitter.Node)
+	walk = func(n *gotreesitter.Node) {
+		if n.Type(lang) == "identifier" && string(src[n.StartByte():n.EndByte()]) == "x" {
+			xNode = n
+			return
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+
+	if xNode == nil {
+		t.Fatal("could not find x identifier node")
+	}
+
+	typ, err := env.ResolveWithExpected(xNode, lang, src, Primitive("int"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !TypeEquals(typ, Primitive("int")) {
+		t.Errorf("expected int, got %s", typ)
+	}
+}
+
+func TestResolveWithExpectedFallback(t *testing.T) {
+	env := NewTypeEnv()
+	env.InferCtx = NewInferenceContext()
+	// "y" is NOT registered — Resolve will fail
+
+	lang, err := GetFWLanguage()
+	if err != nil {
+		t.Fatalf("get language: %v", err)
+	}
+	parser := gotreesitter.NewParser(lang)
+	src := []byte(`package main
+func main() {
+	_ = y
+}
+`)
+	tree, err := parser.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	root := tree.RootNode()
+	var yNode *gotreesitter.Node
+	var walk func(*gotreesitter.Node)
+	walk = func(n *gotreesitter.Node) {
+		if n.Type(lang) == "identifier" && string(src[n.StartByte():n.EndByte()]) == "y" {
+			yNode = n
+			return
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+
+	if yNode == nil {
+		t.Fatal("could not find y identifier node")
+	}
+
+	// With an expected type, should fall back to the expected type
+	typ, err := env.ResolveWithExpected(yNode, lang, src, Primitive("string"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !TypeEquals(typ, Primitive("string")) {
+		t.Errorf("expected string (fallback), got %s", typ)
+	}
+}
+
+func TestResolveWithExpectedNilExpected(t *testing.T) {
+	env := NewTypeEnv()
+	env.InferCtx = NewInferenceContext()
+	env.RegisterVar("z", Primitive("float64"))
+
+	lang, err := GetFWLanguage()
+	if err != nil {
+		t.Fatalf("get language: %v", err)
+	}
+	parser := gotreesitter.NewParser(lang)
+	src := []byte(`package main
+func main() {
+	_ = z
+}
+`)
+	tree, err := parser.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	root := tree.RootNode()
+	var zNode *gotreesitter.Node
+	var walk func(*gotreesitter.Node)
+	walk = func(n *gotreesitter.Node) {
+		if n.Type(lang) == "identifier" && string(src[n.StartByte():n.EndByte()]) == "z" {
+			zNode = n
+			return
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+
+	if zNode == nil {
+		t.Fatal("could not find z identifier node")
+	}
+
+	// With nil expected, should behave like Resolve
+	typ, err := env.ResolveWithExpected(zNode, lang, src, nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !TypeEquals(typ, Primitive("float64")) {
+		t.Errorf("expected float64, got %s", typ)
 	}
 }

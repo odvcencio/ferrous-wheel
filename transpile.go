@@ -483,7 +483,12 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 	if sourceLabel != "" {
 		sourceLabel = filepath.Base(sourceLabel)
 	}
-	t := &fwTranspiler{src: source, lang: lang, sourceFile: sourceLabel, typeEnv: env, lintRan: opts.LintRan}
+	var inferCtx *InferenceContext
+	if env != nil {
+		inferCtx = NewInferenceContext()
+		env.InferCtx = inferCtx
+	}
+	t := &fwTranspiler{src: source, lang: lang, sourceFile: sourceLabel, typeEnv: env, inferCtx: inferCtx, lintRan: opts.LintRan}
 
 	result := t.emit(root)
 
@@ -506,6 +511,7 @@ type fwTranspiler struct {
 	lang            *gotreesitter.Language
 	sourceFile      string // original .fw filename for //line directives
 	typeEnv         *TypeEnv
+	inferCtx        *InferenceContext
 	warnings        []Warning
 	transpileErrors []error
 	needsReflect    bool
@@ -1867,6 +1873,38 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 			}
 		}
 
+		// Try to infer lambda type from call context (bidirectional inference).
+		// If the lambda is an argument to a function with a known signature,
+		// use the expected parameter type to type the lambda's params.
+		if expectedFT := t.inferLambdaTypeFromCallContext(n, len(paramNames)); expectedFT != nil {
+			var b strings.Builder
+			b.WriteString("func(")
+			for i, p := range paramNames {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				if i < len(expectedFT.Params) {
+					t.registerBinding(p, expectedFT.Params[i])
+					fmt.Fprintf(&b, "%s %s", p, expectedFT.Params[i].String())
+				} else {
+					fmt.Fprintf(&b, "%s interface{}", p)
+				}
+			}
+			b.WriteString(")")
+			if len(expectedFT.Results) > 0 {
+				fmt.Fprintf(&b, " %s ", expectedFT.Results[0].String())
+			} else {
+				b.WriteString(" ")
+			}
+			bodyText := t.emit(body)
+			if t.nodeType(body) == "block" {
+				b.WriteString(bodyText)
+			} else {
+				fmt.Fprintf(&b, "{ return %s }", bodyText)
+			}
+			return b.String()
+		}
+
 		// Build Go func literal with interface{} params
 		var b strings.Builder
 		b.WriteString("func(")
@@ -1887,6 +1925,77 @@ func (t *fwTranspiler) emitLambda(n *gotreesitter.Node) string {
 
 		return b.String()
 	})
+}
+
+// inferLambdaTypeFromCallContext checks if a lambda node is an argument to a function
+// call and, if so, returns the expected FuncType for that argument position. This enables
+// bidirectional type inference: the callee's parameter type flows down into the lambda.
+func (t *fwTranspiler) inferLambdaTypeFromCallContext(lambdaNode *gotreesitter.Node, paramCount int) *FuncType {
+	if t.typeEnv == nil {
+		return nil
+	}
+
+	// Walk up: lambda -> argument_list -> call_expression
+	argList := lambdaNode.Parent()
+	if argList == nil {
+		return nil
+	}
+	callExpr := argList.Parent()
+	if callExpr == nil || t.nodeType(callExpr) != "call_expression" {
+		// The parent might be the call_expression directly if the grammar
+		// nests lambda as a direct child; try the argList itself.
+		if t.nodeType(argList) == "call_expression" {
+			callExpr = argList
+			argList = nil
+		} else {
+			return nil
+		}
+	}
+
+	// Resolve the callee's type
+	callee := callExpr.ChildByFieldName("function", t.lang)
+	if callee == nil {
+		return nil
+	}
+	calleeType, err := t.typeEnv.Resolve(callee, t.lang, t.src)
+	if err != nil {
+		return nil
+	}
+	ft, ok := calleeType.(*FuncType)
+	if !ok {
+		return nil
+	}
+
+	// Find which argument position the lambda occupies
+	argIdx := -1
+	if argList != nil {
+		namedIdx := 0
+		for i := 0; i < int(argList.NamedChildCount()); i++ {
+			child := argList.NamedChild(i)
+			if child.StartByte() == lambdaNode.StartByte() && child.EndByte() == lambdaNode.EndByte() {
+				argIdx = namedIdx
+				break
+			}
+			namedIdx++
+		}
+	}
+	if argIdx < 0 || argIdx >= len(ft.Params) {
+		return nil
+	}
+
+	// The expected type at that position should be a FuncType
+	expectedParam := ft.Params[argIdx]
+	expectedFT, ok := expectedParam.(*FuncType)
+	if !ok {
+		return nil
+	}
+
+	// Verify arity matches
+	if len(expectedFT.Params) != paramCount {
+		return nil
+	}
+
+	return expectedFT
 }
 
 // emitFunctionDecl handles function_declaration, injecting receiver when inside impl block.

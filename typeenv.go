@@ -90,6 +90,7 @@ type TypeEnv struct {
 	symbols       []SymbolInfo
 	symbolIndex   map[string]int
 	filename      string
+	InferCtx      *InferenceContext // nil until inference is active
 }
 
 // ImportScope holds the exported types from one Go package.
@@ -273,6 +274,7 @@ func (e *TypeEnv) Clone() *TypeEnv {
 		symbols:       make([]SymbolInfo, len(e.symbols)),
 		symbolIndex:   make(map[string]int, len(e.symbolIndex)),
 		filename:      e.filename,
+		InferCtx:      e.InferCtx,
 	}
 	for name, fn := range e.funcs {
 		cloned.funcs[name] = fn
