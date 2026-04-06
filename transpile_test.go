@@ -1749,3 +1749,108 @@ func f() {
 		t.Error("expected time.Since check")
 	}
 }
+
+func TestTranspileLetMut(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	let mut x = 1
+	x = 2
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "x := 1") {
+		t.Error("expected x := 1")
+	}
+	if !strings.Contains(goCode, "x = 2") {
+		t.Error("expected x = 2 (mutable reassignment)")
+	}
+}
+
+func TestTranspileLetImmutableReassignError(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	let x = 1
+	x = 2
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected error for reassignment of immutable let binding")
+	}
+	if !strings.Contains(err.Error(), "cannot assign to immutable binding") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestTranspileLetImmutableCompoundAssignError(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	let x = 1
+	x += 2
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected error for compound assignment of immutable let binding")
+	}
+	if !strings.Contains(err.Error(), "cannot assign to immutable binding") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestTranspileLetMutMulti(t *testing.T) {
+	source := []byte(`package main
+func f() (int, int) { return 1, 2 }
+func main() {
+	let mut (a, b) = f()
+	a = 3
+	_ = a
+	_ = b
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "a, b :=") {
+		t.Error("expected a, b := destructuring")
+	}
+}
+
+func TestTranspileGoNativeAssignmentStillWorks(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	x := 1
+	x = 2
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "x = 2") {
+		t.Error("Go-native := should allow reassignment")
+	}
+}
+
+func TestTranspileCompilerGeneratedTempsNotTracked(t *testing.T) {
+	source := []byte(`package main
+import "os"
+func main() error {
+	let f = try os.Open("a")
+	let g = try os.Open("b")
+	_ = f
+	_ = g
+	return nil
+}
+`)
+	_, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("compiler-generated temps should not cause immutability errors: %v", err)
+	}
+}

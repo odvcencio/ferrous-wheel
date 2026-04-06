@@ -476,6 +476,11 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 
 	result := t.emit(root)
 
+	// Check for accumulated transpile errors (e.g., immutable binding violations)
+	if len(t.transpileErrors) > 0 {
+		return "", t.warnings, t.transpileErrors[0]
+	}
+
 	// Detect Result[T] and Option[T] usage in the transpiled output
 	t.detectGenericTypes(result)
 
@@ -491,6 +496,7 @@ type fwTranspiler struct {
 	sourceFile      string // original .fw filename for //line directives
 	typeEnv         *TypeEnv
 	warnings        []Warning
+	transpileErrors []error
 	needsReflect    bool
 	needsFmt        bool
 	needsJSON       bool
@@ -623,6 +629,32 @@ func (t *fwTranspiler) registerBinding(name string, typ Type) {
 		return
 	}
 	t.typeEnv.RegisterVar(name, typ)
+}
+
+// registerLetBinding registers a let binding with mutability tracking.
+// Names starting with _fw are compiler-generated temporaries and bypass tracking.
+func (t *fwTranspiler) registerLetBinding(name string, typ Type, mutable bool) {
+	t.registerBinding(name, typ)
+	if t.typeEnv != nil && name != "" && !strings.HasPrefix(name, "_fw") {
+		t.typeEnv.scope.mutable[name] = mutable
+	}
+}
+
+// registerLetBindings registers multiple let bindings with mutability tracking.
+func (t *fwTranspiler) registerLetBindings(names []string, explicitTypes []Type, exprList *gotreesitter.Node, mutable bool) {
+	if t.typeEnv == nil || len(names) == 0 {
+		return
+	}
+	resolved := t.resolveExpressionListTypes(exprList)
+	for i, name := range names {
+		var typ Type
+		if i < len(explicitTypes) && explicitTypes[i] != nil {
+			typ = explicitTypes[i]
+		} else if i < len(resolved) {
+			typ = resolved[i]
+		}
+		t.registerLetBinding(name, typ, mutable)
+	}
 }
 
 func (t *fwTranspiler) registerParameterList(params *gotreesitter.Node) {
@@ -1167,13 +1199,15 @@ func (t *fwTranspiler) emitLet(n *gotreesitter.Node) string {
 		return t.text(n)
 	}
 	name := t.text(nameNode)
+	isMut := t.childByField(n, "mutable") != nil
+
 	if t.nodeType(value) == "error_propagation" {
 		out := t.emitTryAssignment([]string{name}, ":=", value)
-		t.registerBinding(name, t.resolvedType(n))
+		t.registerLetBinding(name, t.resolvedType(n), isMut)
 		return out
 	}
 	out := fmt.Sprintf("%s := %s", name, t.emit(value))
-	t.registerBinding(name, t.resolvedType(n))
+	t.registerLetBinding(name, t.resolvedType(n), isMut)
 	return out
 }
 
@@ -1188,14 +1222,16 @@ func (t *fwTranspiler) emitLetMulti(n *gotreesitter.Node) string {
 	if len(names) == 0 {
 		return t.text(n)
 	}
+	isMut := t.childByField(n, "mutable") != nil
+
 	if t.nodeType(value) == "error_propagation" {
 		out := t.emitTryAssignment(names, ":=", value)
-		t.registerBindings(names, explicitTypes, value)
+		t.registerLetBindings(names, explicitTypes, value, isMut)
 		return out
 	}
 
 	out := fmt.Sprintf("%s := %s", strings.Join(names, ", "), t.emit(value))
-	t.registerBindings(names, explicitTypes, value)
+	t.registerLetBindings(names, explicitTypes, value, isMut)
 	return out
 }
 
@@ -1630,7 +1666,42 @@ func (t *fwTranspiler) emitShortVarDecl(n *gotreesitter.Node) string {
 	return out
 }
 
+func (t *fwTranspiler) checkImmutableAssignment(n *gotreesitter.Node) {
+	left := t.childByField(n, "left")
+	if left == nil || t.typeEnv == nil {
+		return
+	}
+	// Check each identifier in the LHS expression list
+	for i := 0; i < int(left.NamedChildCount()); i++ {
+		child := left.NamedChild(i)
+		if child == nil {
+			continue
+		}
+		if t.nodeType(child) == "identifier" {
+			name := t.text(child)
+			if t.typeEnv.scope.isLetBinding(name) && !t.typeEnv.scope.isMutable(name) {
+				pos := child.StartPoint()
+				t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
+					"line %d:%d: cannot assign to immutable binding '%s' -- use 'let mut' to make it mutable",
+					pos.Row+1, pos.Column+1, name))
+			}
+		}
+	}
+	// Also check if LHS is a single identifier (not wrapped in expression_list)
+	if t.nodeType(left) == "identifier" {
+		name := t.text(left)
+		if t.typeEnv.scope.isLetBinding(name) && !t.typeEnv.scope.isMutable(name) {
+			pos := left.StartPoint()
+			t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
+				"line %d:%d: cannot assign to immutable binding '%s' -- use 'let mut' to make it mutable",
+				pos.Row+1, pos.Column+1, name))
+		}
+	}
+}
+
 func (t *fwTranspiler) emitAssignment(n *gotreesitter.Node) string {
+	t.checkImmutableAssignment(n)
+
 	right := t.childByField(n, "right")
 	tryNode := t.singleTryFromExpressionList(right)
 	if tryNode == nil {
@@ -1707,7 +1778,7 @@ func (t *fwTranspiler) emitIfLet(n *gotreesitter.Node) string {
 			if !blockFound {
 				b.WriteString(" ")
 				b.WriteString(t.emitScopedNode(c, func() {
-					t.registerBinding(varName, t.resolvedType(value))
+					t.registerLetBinding(varName, t.resolvedType(value), false)
 				}))
 				blockFound = true
 			} else {

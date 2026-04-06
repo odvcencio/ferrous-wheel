@@ -193,9 +193,22 @@ func registerSequentialBindings(env *TypeEnv, node *gotreesitter.Node, lang *got
 		if nameNode == nil {
 			return
 		}
-		registerBinding(env, nodeText(src, nameNode), letBindingType(env, node, lang, src))
+		name := nodeText(src, nameNode)
+		isMut := node.ChildByFieldName("mutable", lang) != nil
+		typ := letBindingType(env, node, lang, src)
+		registerBinding(env, name, typ)
+		if name != "" {
+			env.scope.mutable[name] = isMut
+		}
 	case "let_multi_declaration":
-		registerExpressionBindings(env, letMultiNamesAndTypes(node, lang, src), node.ChildByFieldName("value", lang), lang, src)
+		isMut := node.ChildByFieldName("mutable", lang) != nil
+		specs := letMultiNamesAndTypes(node, lang, src)
+		registerExpressionBindings(env, specs, node.ChildByFieldName("value", lang), lang, src)
+		for _, spec := range specs {
+			if spec.Name != "" {
+				env.scope.mutable[spec.Name] = isMut
+			}
+		}
 	case "short_var_declaration":
 		left := node.ChildByFieldName("left", lang)
 		right := node.ChildByFieldName("right", lang)
