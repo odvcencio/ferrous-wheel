@@ -1,0 +1,19 @@
+package main
+
+import "fmt"
+
+enum Color { Red, Green, Blue(int) }
+
+derive Stringer for Color
+
+func main() {
+    let c = Blue(42)
+    fmt.Println(c)
+
+    let label = match c.tag {
+        0 => "warm",
+        1 => "natural",
+        2 => "cool",
+    }
+    fmt.Println(label)
+}

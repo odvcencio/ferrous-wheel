@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ferrous Wheel Playground</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>Ferrous Wheel <span class="version">Playground</span></h1>
+        <div class="controls">
+            <select id="examples">
+                <option value="">Select example...</option>
+                <option value="hello">Hello World</option>
+                <option value="enums">Enums and Match</option>
+                <option value="error_handling">Error Handling</option>
+                <option value="concurrency">Concurrency</option>
+                <option value="let_mut">If-Expressions and Let Mut</option>
+            </select>
+            <button id="run" disabled>Run</button>
+            <button id="share">Share</button>
+        </div>
+    </header>
+    <main>
+        <div id="editor-pane">
+            <div class="pane-header">.fw Source</div>
+            <textarea id="editor" spellcheck="false"></textarea>
+        </div>
+        <div id="output-pane">
+            <div id="go-output">
+                <div class="pane-header">Go Output</div>
+                <pre id="go-code"></pre>
+            </div>
+            <div id="program-output">
+                <div class="pane-header">
+                    Output
+                    <span id="status"></span>
+                </div>
+                <pre id="stdout"></pre>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <a href="https://github.com/odvcencio/ferrous-wheel">GitHub</a>
+        <span>Rust-inspired syntax sugar for Go</span>
+    </footer>
+    <script src="wasm_exec.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

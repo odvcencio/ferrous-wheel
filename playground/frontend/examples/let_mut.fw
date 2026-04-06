@@ -1,0 +1,15 @@
+package main
+
+import "fmt"
+
+func classify(n int) string {
+    let mut label = if n > 0 { "positive" } else if n == 0 { "zero" } else { "negative" }
+    label = fmt.Sprintf("%s (%d)", label, n)
+    return label
+}
+
+func main() {
+    for i in -2..3 {
+        fmt.Println(classify(i))
+    }
+}

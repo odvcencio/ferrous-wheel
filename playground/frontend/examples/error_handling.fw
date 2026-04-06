@@ -1,0 +1,16 @@
+package main
+
+import (
+    "fmt"
+    "strconv"
+)
+
+func parseAndDouble(s string) (int, error) {
+    let n = strconv.Atoi(s)?
+    return n * 2, nil
+}
+
+func main() {
+    let result = try parseAndDouble("21")
+    fmt.Println(result)
+}

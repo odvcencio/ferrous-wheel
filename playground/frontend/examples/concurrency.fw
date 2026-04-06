@@ -1,0 +1,23 @@
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+func main() {
+    let items = []int{1, 2, 3, 4, 5}
+    let mut results = make([]int, len(items))
+    var mu sync.Mutex
+
+    fan out workers, 3 {
+        for i, v in items {
+            let doubled = v * 2
+            mu.Lock()
+            results[i] = doubled
+            mu.Unlock()
+        }
+    }
+
+    fmt.Println(results)
+}
