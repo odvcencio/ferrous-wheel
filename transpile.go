@@ -1082,6 +1082,11 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitRetry(n)
 	case "breaker_block":
 		return t.emitBreaker(n)
+	case "if_statement":
+		if t.isExpressionPosition(n) {
+			return t.emitIfExpression(n)
+		}
+		return t.emitDefault(n)
 	default:
 		return t.emitDefault(n)
 	}
@@ -1263,6 +1268,293 @@ func (t *fwTranspiler) emitTernary(n *gotreesitter.Node) string {
 	// fallback: type resolution failed
 	return fmt.Sprintf("func() interface{} { if %s { return %s }; return %s }()",
 		t.emit(cond), t.emit(cons), t.emit(alt))
+}
+
+// isExpressionPosition checks whether the given node is used in an expression
+// context (RHS of let, short_var_declaration, assignment, return, call argument).
+func (t *fwTranspiler) isExpressionPosition(n *gotreesitter.Node) bool {
+	parent := n.Parent()
+	if parent == nil {
+		return false
+	}
+	switch t.nodeType(parent) {
+	case "let_declaration", "let_multi_declaration":
+		return t.childByField(parent, "value") == n
+	case "short_var_declaration":
+		return true
+	case "return_statement":
+		return true
+	case "call_expression":
+		return true
+	case "expression_list":
+		gp := parent.Parent()
+		if gp != nil {
+			switch t.nodeType(gp) {
+			case "short_var_declaration", "assignment_statement", "return_statement":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsNodeType walks the subtree rooted at n and returns true if any
+// descendant (including n itself) has the given node type.
+func (t *fwTranspiler) containsNodeType(n *gotreesitter.Node, nodeType string) bool {
+	if t.nodeType(n) == nodeType {
+		return true
+	}
+	for i := 0; i < int(n.ChildCount()); i++ {
+		if t.containsNodeType(n.Child(i), nodeType) {
+			return true
+		}
+	}
+	return false
+}
+
+// blockLastExpr returns the last expression node from a block's statement_list.
+// If the block is empty or the last statement is not an expression_statement
+// (or another expression-capable node like if_statement), it returns nil.
+func (t *fwTranspiler) blockLastExpr(block *gotreesitter.Node) *gotreesitter.Node {
+	nc := int(block.NamedChildCount())
+	for i := nc - 1; i >= 0; i-- {
+		c := block.NamedChild(i)
+		if t.nodeType(c) == "statement_list" {
+			return t.blockLastExpr(c)
+		}
+		if t.nodeType(c) == "expression_statement" {
+			if c.NamedChildCount() > 0 {
+				return c.NamedChild(0)
+			}
+			return c
+		}
+		// An if_statement at the end of a block is also a valid tail expression
+		// (it will be recursively transpiled as an if-expression IIFE)
+		if t.nodeType(c) == "if_statement" {
+			return c
+		}
+		// last child is a statement, not an expression
+		return nil
+	}
+	return nil
+}
+
+// emitIfExpression transpiles an if_statement that appears in expression position
+// as an IIFE (Immediately Invoked Function Expression):
+//
+//	let x = if cond { a } else { b }
+//	→ x := func() TYPE { if cond { return a }; return b }()
+func (t *fwTranspiler) emitIfExpression(n *gotreesitter.Node) string {
+	// Validate that else branch exists by walking the entire if-chain
+	t.validateIfExprElse(n)
+	if len(t.transpileErrors) > 0 {
+		return t.text(n)
+	}
+
+	// Validate no error_propagation inside branches (would return from IIFE, not enclosing function)
+	t.validateIfExprNoTry(n)
+	if len(t.transpileErrors) > 0 {
+		return t.text(n)
+	}
+
+	// Validate that each branch ends with an expression
+	t.validateIfExprBranches(n)
+	if len(t.transpileErrors) > 0 {
+		return t.text(n)
+	}
+
+	// Collect branch expression types for unification
+	returnType := "interface{}"
+	if t.typeEnv != nil {
+		branchTypes := t.collectIfExprBranchTypes(n)
+		if len(branchTypes) > 0 {
+			unified := branchTypes[0]
+			allOk := true
+			for _, bt := range branchTypes[1:] {
+				u, uerr := Unify(unified, bt)
+				if uerr != nil {
+					allOk = false
+					break
+				}
+				unified = u
+			}
+			if allOk && unified != nil {
+				if u, ok := unified.(*UntypedConstType); ok {
+					unified = u.Default()
+				}
+				returnType = unified.String()
+			}
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "func() %s { ", returnType)
+	t.emitIfExprBody(&b, n)
+	b.WriteString(" }()")
+	return b.String()
+}
+
+// validateIfExprElse walks an if-expression chain and errors if any terminal
+// branch is missing an else clause.
+func (t *fwTranspiler) validateIfExprElse(n *gotreesitter.Node) {
+	alt := t.childByField(n, "alternative")
+	if alt == nil {
+		t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
+			"if-expression requires an else branch"))
+		return
+	}
+	// If alternative is another if_statement (else-if), recurse
+	if t.nodeType(alt) == "if_statement" {
+		t.validateIfExprElse(alt)
+	}
+}
+
+// validateIfExprNoTry checks that no branch contains error_propagation nodes.
+func (t *fwTranspiler) validateIfExprNoTry(n *gotreesitter.Node) {
+	cons := t.childByField(n, "consequence")
+	if cons != nil && t.containsNodeType(cons, "error_propagation") {
+		t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
+			"if-expression branch must not contain try (error propagation would return from the IIFE, not the enclosing function)"))
+		return
+	}
+	alt := t.childByField(n, "alternative")
+	if alt == nil {
+		return
+	}
+	if t.nodeType(alt) == "if_statement" {
+		t.validateIfExprNoTry(alt)
+	} else if t.containsNodeType(alt, "error_propagation") {
+		t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
+			"if-expression branch must not contain try (error propagation would return from the IIFE, not the enclosing function)"))
+	}
+}
+
+// validateIfExprBranches checks that each branch block ends with an expression.
+func (t *fwTranspiler) validateIfExprBranches(n *gotreesitter.Node) {
+	cons := t.childByField(n, "consequence")
+	if cons != nil && t.blockLastExpr(cons) == nil {
+		t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
+			"if-expression branch must end with an expression, not a statement"))
+		return
+	}
+	alt := t.childByField(n, "alternative")
+	if alt == nil {
+		return
+	}
+	if t.nodeType(alt) == "if_statement" {
+		t.validateIfExprBranches(alt)
+	} else if t.blockLastExpr(alt) == nil {
+		t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
+			"if-expression branch must end with an expression, not a statement"))
+	}
+}
+
+// collectIfExprBranchTypes collects the types of all branch tail expressions.
+func (t *fwTranspiler) collectIfExprBranchTypes(n *gotreesitter.Node) []Type {
+	var types []Type
+	cons := t.childByField(n, "consequence")
+	if cons != nil {
+		if expr := t.blockLastExpr(cons); expr != nil {
+			if bt, err := t.typeEnv.Resolve(expr, t.lang, t.src); err == nil {
+				types = append(types, bt)
+			}
+		}
+	}
+	alt := t.childByField(n, "alternative")
+	if alt == nil {
+		return types
+	}
+	if t.nodeType(alt) == "if_statement" {
+		types = append(types, t.collectIfExprBranchTypes(alt)...)
+	} else {
+		if expr := t.blockLastExpr(alt); expr != nil {
+			if bt, err := t.typeEnv.Resolve(expr, t.lang, t.src); err == nil {
+				types = append(types, bt)
+			}
+		}
+	}
+	return types
+}
+
+// emitExprValue emits a node as an expression value. If the node is an
+// if_statement, it forces emission as an if-expression IIFE regardless of
+// the node's position in the tree.
+func (t *fwTranspiler) emitExprValue(n *gotreesitter.Node) string {
+	if t.nodeType(n) == "if_statement" {
+		return t.emitIfExpression(n)
+	}
+	return t.emit(n)
+}
+
+// emitIfExprBody writes the if/else-if/else chain body inside the IIFE.
+// For a simple if/else:  if COND { return EXPR }; return EXPR
+// For else-if chains:    if COND { return EXPR } else if COND { return EXPR }; return EXPR
+func (t *fwTranspiler) emitIfExprBody(b *strings.Builder, n *gotreesitter.Node) {
+	cond := t.childByField(n, "condition")
+	cons := t.childByField(n, "consequence")
+	alt := t.childByField(n, "alternative")
+
+	if cond == nil || cons == nil {
+		b.WriteString(t.text(n))
+		return
+	}
+
+	// Emit the consequence block: extract preceding statements and the tail expression
+	consExpr := t.blockLastExpr(cons)
+	consPrefix := t.emitBlockWithoutLast(cons)
+
+	if alt == nil {
+		// Should not happen (validated earlier), but fallback
+		fmt.Fprintf(b, "if %s { %sreturn %s }", t.emit(cond), consPrefix, t.emitExprValue(consExpr))
+		return
+	}
+
+	if t.nodeType(alt) == "if_statement" {
+		// else-if chain: emit current branch, then recurse
+		fmt.Fprintf(b, "if %s { %sreturn %s } else ", t.emit(cond), consPrefix, t.emitExprValue(consExpr))
+		t.emitIfExprBody(b, alt)
+	} else {
+		// Terminal else block
+		altExpr := t.blockLastExpr(alt)
+		altPrefix := t.emitBlockWithoutLast(alt)
+		if altPrefix == "" {
+			// Simple case: single expression in both branches
+			fmt.Fprintf(b, "if %s { %sreturn %s }; %sreturn %s",
+				t.emit(cond), consPrefix, t.emitExprValue(consExpr), altPrefix, t.emitExprValue(altExpr))
+		} else {
+			fmt.Fprintf(b, "if %s { %sreturn %s } else { %sreturn %s }",
+				t.emit(cond), consPrefix, t.emitExprValue(consExpr), altPrefix, t.emitExprValue(altExpr))
+		}
+	}
+}
+
+// emitBlockWithoutLast emits all statements in a block except the last one
+// (which is the tail expression for if-expressions). Returns empty string if
+// the block only has one statement.
+func (t *fwTranspiler) emitBlockWithoutLast(block *gotreesitter.Node) string {
+	// Find the statement_list child
+	var stmtList *gotreesitter.Node
+	for i := 0; i < int(block.NamedChildCount()); i++ {
+		c := block.NamedChild(i)
+		if t.nodeType(c) == "statement_list" {
+			stmtList = c
+			break
+		}
+	}
+	if stmtList == nil {
+		return ""
+	}
+	nc := int(stmtList.NamedChildCount())
+	if nc <= 1 {
+		return ""
+	}
+	var b strings.Builder
+	for i := 0; i < nc-1; i++ {
+		c := stmtList.NamedChild(i)
+		b.WriteString(t.emit(c))
+		b.WriteString("; ")
+	}
+	return b.String()
 }
 
 // match val { 1 => "one", 2 => "two" }

@@ -1854,3 +1854,105 @@ func main() error {
 		t.Fatalf("compiler-generated temps should not cause immutability errors: %v", err)
 	}
 }
+
+func TestTranspileIfExpression(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	let x = if true { 1 } else { 2 }
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "func()") {
+		t.Error("expected IIFE wrapper for if-expression")
+	}
+	if !strings.Contains(goCode, "return 1") {
+		t.Error("expected return 1 in true branch")
+	}
+	if !strings.Contains(goCode, "return 2") {
+		t.Error("expected return 2 in else branch")
+	}
+}
+
+func TestTranspileIfExpressionElseIf(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	let x = if true { "a" } else if false { "b" } else { "c" }
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "func()") {
+		t.Error("expected IIFE for if-expression")
+	}
+}
+
+func TestTranspileIfExpressionMissingElseError(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	let x = if true { 1 }
+	_ = x
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected error for if-expression without else")
+	}
+	if !strings.Contains(err.Error(), "if-expression requires an else branch") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestTranspileIfStatementStillWorks(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	if true {
+		_ = 1
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if strings.Contains(goCode, "func()") {
+		t.Error("regular if should not become IIFE")
+	}
+}
+
+func TestTranspileIfExpressionNested(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	let x = if true { if false { 1 } else { 2 } } else { 3 }
+	_ = x
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "func()") {
+		t.Error("expected IIFE for nested if-expression")
+	}
+}
+
+func TestTranspileIfExpressionNoTryInBranch(t *testing.T) {
+	source := []byte(`package main
+import "os"
+func main() error {
+	let x = if true { try os.Open("f") } else { nil }
+	_ = x
+	return nil
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected error for try inside if-expression branch")
+	}
+}

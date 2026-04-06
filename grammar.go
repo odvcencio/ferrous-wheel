@@ -494,6 +494,8 @@ func Grammar() *GrammarType {
 			// Concurrency
 			Sym("fan_in_expression"),
 			Sym("pipeline_expression"),
+			// if-as-expression: allows if_statement in expression position
+			Sym("if_statement"),
 		} {
 			AppendChoice(g, "_expression", r)
 		}
@@ -592,6 +594,9 @@ func Grammar() *GrammarType {
 
 		// if_let starts with "if" like Go's if_statement
 		AddConflict(g, "if_let_statement", "if_statement")
+
+		// if_statement can be both _statement and _expression (if-as-expression)
+		AddConflict(g, "_expression", "if_statement")
 
 		// list_comprehension has "for" and "if" inside expressions
 		AddConflict(g, "list_comprehension", "_expression")
