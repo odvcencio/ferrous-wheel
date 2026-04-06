@@ -667,6 +667,32 @@ The suite includes parser tests, transpiler tests, end-to-end compile/run checks
 
 The same architecture powers any grammar extension — see [danmuji](https://github.com/odvcencio/danmuji) for a BDD testing DSL built the same way.
 
+## Tooling
+
+### VS Code extension
+
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=odvcencio.ferrous-wheel) or build from source:
+
+```bash
+cd editor/vscode && npm install && npx vsce package
+```
+
+Features: syntax highlighting, LSP integration (hover, completion, go-to-definition, diagnostics), and snippets for all FW constructs.
+
+### Playground
+
+Try Ferrous Wheel in the browser at [play.ferrous-wheel.dev](https://odvcencio.github.io/ferrous-wheel/) — write `.fw` code, see the Go output live, and run it.
+
+### Benchmarks
+
+Runtime parity benchmarks prove FW-generated Go performs identically to hand-written Go:
+
+```bash
+go test -bench=. -benchmem ./bench/...
+```
+
+See [bench/README.md](bench/README.md) for results.
+
 ## License
 
 MIT
