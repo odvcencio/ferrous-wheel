@@ -1,0 +1,5 @@
+package bench
+
+func ComprehensionFW(items []int) []interface{} {
+	return [x*2 for x in items if x > 0]
+}

@@ -1,0 +1,16 @@
+package bench
+
+enum Tag {
+	Low,
+	Medium,
+	High,
+}
+
+func ClassifyFW(tag int) string {
+	let t = match tag {
+		0 => "low",
+		1 => "medium",
+		2 => "high",
+	}
+	return t
+}

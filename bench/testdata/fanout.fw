@@ -1,0 +1,10 @@
+package bench
+
+func FanoutProcessFW(items []int) []int {
+	let n = len(items)
+	let results = make([]int, n)
+	fan out workers, n {
+		results[_wi%n] = _wi * 2
+	}
+	return results
+}
