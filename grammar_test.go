@@ -1057,3 +1057,72 @@ func f() {
 		t.Errorf("ERROR: %s", sexp)
 	}
 }
+
+// =============================================
+// POSTFIX ? ERROR PROPAGATION PARSE TESTS
+// =============================================
+
+func TestParsePostfixTry(t *testing.T) {
+	sexpr := parseFW(t, `package main
+
+import "os"
+
+func main() error {
+	let f = os.Open("test")?
+	_ = f
+	return nil
+}
+`)
+	if !strings.Contains(sexpr, "postfix_try") {
+		t.Error("expected postfix_try node in parse tree")
+	}
+}
+
+func TestParsePostfixTryChained(t *testing.T) {
+	// Two distinct postfix ? operators in the same block.
+	// foo()? and bar()? each produce one postfix_try node.
+	sexpr := parseFW(t, `package main
+
+func main() error {
+	let x = foo()?
+	let y = bar()?
+	_ = x
+	_ = y
+	return nil
+}
+`)
+	count := strings.Count(sexpr, "postfix_try")
+	if count < 2 {
+		t.Errorf("expected 2 postfix_try nodes, got %d", count)
+	}
+}
+
+func TestParseNullCoalesceStillWorks(t *testing.T) {
+	sexpr := parseFW(t, `package main
+
+func main() {
+	let x = a ?? b
+	_ = x
+}
+`)
+	if !strings.Contains(sexpr, "null_coalesce") {
+		t.Error("?? should still parse as null_coalesce")
+	}
+}
+
+func TestParsePostfixTryWithSafeNav(t *testing.T) {
+	sexpr := parseFW(t, `package main
+
+func main() error {
+	let x = obj?.field?
+	_ = x
+	return nil
+}
+`)
+	if !strings.Contains(sexpr, "postfix_try") {
+		t.Error("expected postfix_try wrapping safe_navigation")
+	}
+	if !strings.Contains(sexpr, "safe_navigation") {
+		t.Error("expected safe_navigation inside postfix_try")
+	}
+}

@@ -90,7 +90,12 @@ func Grammar() *GrammarType {
 		// PrecLeft(2) puts it below most Go operators but above logical OR.
 		// The ?? operator is a named token rule to ensure it matches as a
 		// single 2-char token and doesn't get split into two ? tokens.
-		g.Define("_fw_null_coalesce_op", Token(Seq(Str("?"), Str("?"))))
+		//
+		// Prec(11,...) inside Token gives this a DFA priority of -11000, which is
+		// better (lower) than ImmToken(Str("?"))'s -10000 priority. This ensures
+		// the DFA keeps the transition from the ? accept state into the ?? path,
+		// so that ?? is always matched as a single token rather than two ? tokens.
+		g.Define("_fw_null_coalesce_op", Token(Prec(11, Seq(Str("?"), Str("?")))))
 
 		g.Define("null_coalesce", PrecLeft(2,
 			Seq(
@@ -121,6 +126,21 @@ func Grammar() *GrammarType {
 				Field("expr", Sym("_expression")),
 			),
 		))
+
+		// --- postfix error propagation: expr? ---
+		// Postfix ? strips the error from (T, error) and propagates on error.
+		// Uses the bare Str("?") to share the token with the ternary operator,
+		// relying on GLR conflict resolution rather than ImmToken.
+		// _fw_null_coalesce_op uses Token(Prec(11,...)) with priority -11000,
+		// which is better than Str("?") priority 0, so ?? is always preferred
+		// over two ? tokens by the DFA maximal-munch rule.
+		// PrecLeft(9) > ternary PrecRight(1): when both ? paths are possible,
+		// GLR conflict resolution with AddConflict allows the parser to explore
+		// ternary; when ternary can't complete (no : expr), postfix_try wins.
+		g.Define("postfix_try", PrecLeft(9, Seq(
+			Field("expr", Sym("_expression")),
+			Str("?"),
+		)))
 
 		// --- let binding: let x = expr  or  let x: int = expr  or  let mut x = expr ---
 		g.Define("let_declaration", Seq(
@@ -484,6 +504,7 @@ func Grammar() *GrammarType {
 			Sym("null_coalesce"),
 			Sym("safe_navigation"),
 			Sym("error_propagation"),
+			Sym("postfix_try"),
 			Sym("lambda_expression"),
 			Sym("ternary_expression"),
 			Sym("range_expression"),
@@ -555,6 +576,13 @@ func Grammar() *GrammarType {
 		AddConflict(g, "error_propagation", "safe_navigation")
 		AddConflict(g, "error_propagation", "null_coalesce")
 		AddConflict(g, "safe_navigation", "null_coalesce")
+
+		// postfix_try conflicts: expr? vs ternary expr?expr:expr vs null_coalesce ?? vs safe_nav ?.
+		AddConflict(g, "_expression", "postfix_try")
+		AddConflict(g, "postfix_try", "ternary_expression")
+		AddConflict(g, "postfix_try", "null_coalesce")
+		AddConflict(g, "postfix_try", "safe_navigation")
+		AddConflict(g, "postfix_try", "error_propagation")
 
 		// match_arm body can be expression or block, conflicts with Go block parsing
 		AddConflict(g, "match_arm", "_expression")
