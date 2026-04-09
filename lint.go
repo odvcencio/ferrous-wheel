@@ -11,8 +11,8 @@ type LintSeverity int
 
 const (
 	LintError   LintSeverity = iota // blocks transpilation
-	LintWarning                      // reported, doesn't block
-	LintInfo                         // informational
+	LintWarning                     // reported, doesn't block
+	LintInfo                        // informational
 )
 
 func (s LintSeverity) String() string {
@@ -194,8 +194,8 @@ func buildLintScope(root *gotreesitter.Node, lang *gotreesitter.Language, src []
 
 type emptyMatchRule struct{}
 
-func (r *emptyMatchRule) Name() string        { return "empty-match" }
-func (r *emptyMatchRule) Description() string  { return "match expression with zero arms" }
+func (r *emptyMatchRule) Name() string           { return "empty-match" }
+func (r *emptyMatchRule) Description() string    { return "match expression with zero arms" }
 func (r *emptyMatchRule) Severity() LintSeverity { return LintWarning }
 
 func (r *emptyMatchRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
@@ -320,8 +320,8 @@ func (r *emptyMatchRule) isEmptyMatchBody(n *gotreesitter.Node, ctx *LintContext
 
 type unusedLetRule struct{}
 
-func (r *unusedLetRule) Name() string        { return "unused-let" }
-func (r *unusedLetRule) Description() string  { return "let binding never read" }
+func (r *unusedLetRule) Name() string           { return "unused-let" }
+func (r *unusedLetRule) Description() string    { return "let binding never read" }
 func (r *unusedLetRule) Severity() LintSeverity { return LintWarning }
 
 func (r *unusedLetRule) CheckScope(scope *Scope, root *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
@@ -355,8 +355,8 @@ func (r *unusedLetRule) CheckScope(scope *Scope, root *gotreesitter.Node, ctx *L
 
 type unusedMutRule struct{}
 
-func (r *unusedMutRule) Name() string        { return "unused-mut" }
-func (r *unusedMutRule) Description() string  { return "let mut binding never reassigned" }
+func (r *unusedMutRule) Name() string           { return "unused-mut" }
+func (r *unusedMutRule) Description() string    { return "let mut binding never reassigned" }
 func (r *unusedMutRule) Severity() LintSeverity { return LintWarning }
 
 func (r *unusedMutRule) CheckScope(scope *Scope, root *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
@@ -714,9 +714,11 @@ func collectLHSNames(n *gotreesitter.Node, lang *gotreesitter.Language, src []by
 
 type unreachableMatchArmRule struct{}
 
-func (r *unreachableMatchArmRule) Name() string            { return "unreachable-match-arm" }
-func (r *unreachableMatchArmRule) Description() string     { return "arm after wildcard/default pattern is unreachable" }
-func (r *unreachableMatchArmRule) Severity() LintSeverity  { return LintWarning }
+func (r *unreachableMatchArmRule) Name() string { return "unreachable-match-arm" }
+func (r *unreachableMatchArmRule) Description() string {
+	return "arm after wildcard/default pattern is unreachable"
+}
+func (r *unreachableMatchArmRule) Severity() LintSeverity { return LintWarning }
 
 func (r *unreachableMatchArmRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
 	if n.Type(ctx.Lang) != "match_expression" {
@@ -760,9 +762,9 @@ func (r *unreachableMatchArmRule) Check(n *gotreesitter.Node, ctx *LintContext) 
 
 type missingElseIfExprRule struct{}
 
-func (r *missingElseIfExprRule) Name() string            { return "missing-else-if-expr" }
-func (r *missingElseIfExprRule) Description() string     { return "if-expression without else" }
-func (r *missingElseIfExprRule) Severity() LintSeverity  { return LintError }
+func (r *missingElseIfExprRule) Name() string           { return "missing-else-if-expr" }
+func (r *missingElseIfExprRule) Description() string    { return "if-expression without else" }
+func (r *missingElseIfExprRule) Severity() LintSeverity { return LintError }
 
 func (r *missingElseIfExprRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
 	if n.Type(ctx.Lang) != "if_statement" {
@@ -830,9 +832,11 @@ func lintIsExpressionPosition(n *gotreesitter.Node, lang *gotreesitter.Language)
 
 type redundantTryRule struct{}
 
-func (r *redundantTryRule) Name() string            { return "redundant-try" }
-func (r *redundantTryRule) Description() string     { return "try or ? on a function that doesn't return error" }
-func (r *redundantTryRule) Severity() LintSeverity  { return LintWarning }
+func (r *redundantTryRule) Name() string { return "redundant-try" }
+func (r *redundantTryRule) Description() string {
+	return "try or ? on a function that doesn't return error"
+}
+func (r *redundantTryRule) Severity() LintSeverity { return LintWarning }
 
 func (r *redundantTryRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
 	if ctx.TypeEnv == nil {
@@ -880,9 +884,11 @@ func (r *redundantTryRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintD
 
 type shadowedLetRule struct{}
 
-func (r *shadowedLetRule) Name() string            { return "shadowed-let" }
-func (r *shadowedLetRule) Description() string     { return "let binding shadows same name in parent scope" }
-func (r *shadowedLetRule) Severity() LintSeverity  { return LintWarning }
+func (r *shadowedLetRule) Name() string { return "shadowed-let" }
+func (r *shadowedLetRule) Description() string {
+	return "let binding shadows same name in parent scope"
+}
+func (r *shadowedLetRule) Severity() LintSeverity { return LintWarning }
 
 func (r *shadowedLetRule) CheckScope(_ *Scope, root *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
 	var diags []LintDiagnostic
@@ -949,9 +955,9 @@ func (r *shadowedLetRule) CheckScope(_ *Scope, root *gotreesitter.Node, ctx *Lin
 
 type emptyBlockRule struct{}
 
-func (r *emptyBlockRule) Name() string            { return "empty-block" }
-func (r *emptyBlockRule) Description() string     { return "empty {} body (likely a mistake)" }
-func (r *emptyBlockRule) Severity() LintSeverity  { return LintInfo }
+func (r *emptyBlockRule) Name() string           { return "empty-block" }
+func (r *emptyBlockRule) Description() string    { return "empty {} body (likely a mistake)" }
+func (r *emptyBlockRule) Severity() LintSeverity { return LintInfo }
 
 func (r *emptyBlockRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
 	if n.Type(ctx.Lang) != "block" {
@@ -987,9 +993,9 @@ func (r *emptyBlockRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDia
 
 type unnecessarySafeNavRule struct{}
 
-func (r *unnecessarySafeNavRule) Name() string            { return "unnecessary-safe-nav" }
-func (r *unnecessarySafeNavRule) Description() string     { return "?. on a non-pointer type" }
-func (r *unnecessarySafeNavRule) Severity() LintSeverity  { return LintWarning }
+func (r *unnecessarySafeNavRule) Name() string           { return "unnecessary-safe-nav" }
+func (r *unnecessarySafeNavRule) Description() string    { return "?. on a non-pointer type" }
+func (r *unnecessarySafeNavRule) Severity() LintSeverity { return LintWarning }
 
 func (r *unnecessarySafeNavRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
 	if ctx.TypeEnv == nil {
@@ -1023,9 +1029,9 @@ func (r *unnecessarySafeNavRule) Check(n *gotreesitter.Node, ctx *LintContext) [
 
 type unreachableAfterGuardRule struct{}
 
-func (r *unreachableAfterGuardRule) Name() string            { return "unreachable-after-guard" }
-func (r *unreachableAfterGuardRule) Description() string     { return "code after guard ... else return" }
-func (r *unreachableAfterGuardRule) Severity() LintSeverity  { return LintWarning }
+func (r *unreachableAfterGuardRule) Name() string           { return "unreachable-after-guard" }
+func (r *unreachableAfterGuardRule) Description() string    { return "code after guard ... else return" }
+func (r *unreachableAfterGuardRule) Severity() LintSeverity { return LintWarning }
 
 func (r *unreachableAfterGuardRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
 	// This rule is intentionally conservative. A guard statement's else branch
