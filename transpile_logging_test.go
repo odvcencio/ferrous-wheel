@@ -470,3 +470,110 @@ func f() {
 		t.Errorf("expected exactly 1 _fwcolor definition, got %d", count)
 	}
 }
+
+func TestTranspileLoggingEndToEnd(t *testing.T) {
+	source := []byte(`package main
+
+import "os/exec"
+
+log.config!(level: .info, time: .relative)
+
+func deploy(env string, image string) error {
+	with service: "deployer", env, image {
+		time "deploy" {
+			time "build" {
+				info "compiling binary"
+				let out = try exec.Command("go", "build", "-o", "app").CombinedOutput()
+				debug "build output", raw: string(out)
+				info "built app", status: color.green("ok")
+			}
+			time "push" {
+				info "pushing image", target: color.cyan(image)
+				let _ = try exec.Command("docker", "push", image).CombinedOutput()
+			}
+			time "rollout" {
+				info f"rolling out to {env}"
+				let _ = try exec.Command("kubectl", "set", "image", f"deploy/app=app={image}").CombinedOutput()
+				time "health_check" {
+					info "waiting for healthy pods"
+					retry 5 {
+						exec.Command("kubectl", "rollout", "status", "deploy/app").Run()
+					}
+				}
+				info "rollout complete", result: color.green("complete")
+			}
+		}
+	}
+	return nil
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	// Verify slog calls present
+	if !strings.Contains(goCode, "slog.Info(") {
+		t.Error("expected slog.Info calls")
+	}
+	if !strings.Contains(goCode, "slog.Debug(") {
+		t.Error("expected slog.Debug call for debug statement")
+	}
+
+	// Verify color helper present (from color.green/color.cyan in log attrs)
+	if !strings.Contains(goCode, "_fwcolor(") {
+		t.Error("expected color helper calls")
+	}
+
+	// Verify time block depth tracking
+	if !strings.Contains(goCode, "_fwlogDepth") {
+		t.Error("expected depth tracking")
+	}
+
+	// Verify with block scoping
+	if !strings.Contains(goCode, ".With(") {
+		t.Error("expected .With() scoping")
+	}
+
+	// Verify imports
+	for _, imp := range []string{`"log/slog"`, `"time"`, `"os"`} {
+		if !strings.Contains(goCode, imp) {
+			t.Errorf("expected import %s", imp)
+		}
+	}
+
+	// Verify config consumed (not in output)
+	if strings.Contains(goCode, "log.config!") {
+		t.Error("raw log.config! should not appear in output")
+	}
+
+	// Verify handler infrastructure
+	if !strings.Contains(goCode, "_fwlogHandler") {
+		t.Error("expected log handler in output")
+	}
+	if !strings.Contains(goCode, "_fwLevelTrace") {
+		t.Error("expected trace level constant")
+	}
+
+	// Verify retry still works alongside logging
+	if !strings.Contains(goCode, "_retryErr") {
+		t.Error("expected retry construct to still work")
+	}
+
+	// Verify f-string interpolation produces fmt.Sprintf
+	if !strings.Contains(goCode, "fmt.Sprintf(") {
+		t.Error("expected fmt.Sprintf from f-string interpolation")
+	}
+
+	// Verify let := transpilation (let out = try expr -> out, _fwTryErr0 := expr)
+	if !strings.Contains(goCode, "out, _fwTryErr") {
+		t.Error("expected let-to-:= transpilation for 'let out = try ...'")
+	}
+
+	// Verify time block nesting (at least 4 time blocks: deploy, build, push, rollout, health_check)
+	depthIncrements := strings.Count(goCode, "_fwlogDepth++")
+	if depthIncrements < 4 {
+		t.Errorf("expected at least 4 depth increments for nested time blocks, got %d", depthIncrements)
+	}
+}
