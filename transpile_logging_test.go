@@ -185,3 +185,71 @@ func f() {
 		t.Error("expected log/slog import")
 	}
 }
+
+func TestTranspileWithBlock(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	with request_id: rid, tenant: t {
+		info "handling"
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, `.With("request_id", rid`) {
+		t.Error("expected .With() call with request_id")
+	}
+	if !strings.Contains(goCode, `slog.Info("handling"`) {
+		t.Error("expected inner log call")
+	}
+}
+
+func TestTranspileWithBlockTraceSpans(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	with service: "api" {
+		info "boot"
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "enter") {
+		t.Error("expected trace entry log")
+	}
+	if !strings.Contains(goCode, "exit") {
+		t.Error("expected trace exit log")
+	}
+	if !strings.Contains(goCode, "time.Since") {
+		t.Error("expected duration measurement")
+	}
+}
+
+func TestTranspileWithBlockNested(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	with service: "api" {
+		with request_id: rid {
+			info "inner"
+		}
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Count(goCode, ".With(") < 2 {
+		t.Error("expected nested .With() calls")
+	}
+}

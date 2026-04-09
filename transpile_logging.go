@@ -86,6 +86,41 @@ func (t *fwTranspiler) emitColorCall(n *gotreesitter.Node) string {
 	return fmt.Sprintf("_fwcolor(%q, fmt.Sprint(%s))", code, val)
 }
 
+func (t *fwTranspiler) emitLogWithBlock(n *gotreesitter.Node) string {
+	t.needsSlog = true
+	t.needsLogHelper = true // defines _fwLevelTrace const
+	t.needsContext = true
+	t.needsTime = true
+
+	attrs := t.collectLogAttrs(n)
+	block := t.findBlock(n)
+
+	var b strings.Builder
+	b.WriteString("{\n")
+
+	// Save previous logger, push scoped logger
+	b.WriteString("\t_fwlogPrev := slog.Default()\n")
+	if len(attrs) > 0 {
+		fmt.Fprintf(&b, "\tslog.SetDefault(slog.Default().With(%s))\n", strings.Join(attrs, ", "))
+	}
+
+	// Trace-level entry span
+	fmt.Fprintf(&b, "\tslog.Log(context.Background(), _fwLevelTrace, \"▶ enter\")\n")
+	b.WriteString("\t_fwWithStart := time.Now()\n")
+
+	// Body
+	fmt.Fprintf(&b, "\t%s\n", block)
+
+	// Trace-level exit span with duration
+	fmt.Fprintf(&b, "\tslog.Log(context.Background(), _fwLevelTrace, \"◀ exit\", \"duration\", time.Since(_fwWithStart))\n")
+
+	// Restore previous logger
+	b.WriteString("\tslog.SetDefault(_fwlogPrev)\n")
+	b.WriteString("}")
+
+	return b.String()
+}
+
 func (t *fwTranspiler) collectLogAttrs(n *gotreesitter.Node) []string {
 	var attrs []string
 	for i := 0; i < int(n.NamedChildCount()); i++ {
