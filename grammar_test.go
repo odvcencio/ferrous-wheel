@@ -1351,3 +1351,65 @@ func f() {
 		t.Errorf("ERROR: %s", sexp)
 	}
 }
+
+func TestParseLogConfig(t *testing.T) {
+	sexp := parseFW(t, `package main
+
+log.config!(level: .info, time: .relative, format: .pretty)
+
+func f() {}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_config") {
+		t.Error("expected log_config")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseLogConfigPartial(t *testing.T) {
+	sexp := parseFW(t, `package main
+
+log.config!(level: .debug)
+
+func f() {}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_config") {
+		t.Error("expected log_config")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseColorExpression(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+    info f"deployed to {color.cyan(env)}", version: color.green(v)
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "color_call") {
+		t.Error("expected color_call")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseColorNested(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+    info "status", label: color.bold(color.red(msg))
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if strings.Count(sexp, "color_call") < 2 {
+		t.Error("expected nested color_calls")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}

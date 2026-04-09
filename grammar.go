@@ -533,11 +533,48 @@ func Grammar() *GrammarType {
 			Sym("block"),
 		))
 
+		// --- logging: log.config! top-level directive ---
+		// log.config!(level: .info, time: .relative, format: .pretty)
+		// NOTE: log_config_enum_value is a named rule (not inline Seq) so Field() captures it correctly
+		g.Define("log_config_enum_value", Seq(
+			Str("."),
+			Field("name", Sym("identifier")),
+		))
+
+		g.Define("log_config_option", Seq(
+			Field("key", Sym("identifier")),
+			Str(":"),
+			Field("value", Sym("log_config_enum_value")),
+		))
+
+		g.Define("log_config", Seq(
+			Str("log"), Str("."), Str("config"), Str("!"),
+			Str("("),
+			Sym("log_config_option"),
+			Optional(Repeat1(Seq(Str(","), Sym("log_config_option")))),
+			Str(")"),
+		))
+
+		// --- logging: color.* expression helpers ---
+		// color.red(expr), color.bold(expr), color.cyan(expr), etc.
+		g.Define("color_call", Seq(
+			Str("color"), Str("."),
+			Field("style", Choice(
+				Str("red"), Str("green"), Str("yellow"), Str("blue"),
+				Str("magenta"), Str("cyan"), Str("gray"),
+				Str("bold"), Str("dim"), Str("italic"), Str("underline"),
+			)),
+			Str("("),
+			Field("value", Sym("_expression")),
+			Str(")"),
+		))
+
 		// Wire into grammar
 		for _, r := range []*Rule{
 			Sym("enum_declaration"),
 			Sym("derive_declaration"),
 			Sym("impl_block"),
+			Sym("log_config"),
 		} {
 			AppendChoice(g, "_top_level_declaration", r)
 		}
@@ -560,6 +597,8 @@ func Grammar() *GrammarType {
 			Sym("pipeline_expression"),
 			// if-as-expression: allows if_statement in expression position
 			Sym("if_statement"),
+			// Logging
+			Sym("color_call"),
 		} {
 			AppendChoice(g, "_expression", r)
 		}
@@ -718,6 +757,8 @@ func Grammar() *GrammarType {
 		AddConflict(g, "log_statement", "log_attr")
 		AddConflict(g, "_statement", "log_with_block")
 		AddConflict(g, "_statement", "log_time_block")
+		AddConflict(g, "_expression", "color_call")
+		AddConflict(g, "_top_level_declaration", "log_config")
 
 		// fan in/out both start with "fan"
 		AddConflict(g, "fan_in_expression", "fan_out_block")
