@@ -392,3 +392,81 @@ func f() {
 		t.Error("expected tree prefix helper")
 	}
 }
+
+func TestTranspileLogHelperShape(t *testing.T) {
+	source := []byte(`package main
+func main() {
+	info "hello", name: "world"
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	// Handler should be present
+	if !strings.Contains(goCode, "_fwlogHandler") {
+		t.Error("expected _fwlogHandler type")
+	}
+	// Trace level constant
+	if !strings.Contains(goCode, "_fwLevelTrace") {
+		t.Error("expected _fwLevelTrace constant")
+	}
+	// Relative timestamp support
+	if !strings.Contains(goCode, "_fwlogStart") {
+		t.Error("expected _fwlogStart for relative time")
+	}
+	// Color in handler
+	if !strings.Contains(goCode, "_fwcolorEnabled") {
+		t.Error("expected _fwcolorEnabled in handler")
+	}
+	// Init function
+	if !strings.Contains(goCode, "func init()") {
+		t.Error("expected init() function")
+	}
+	// FW_LOG env var
+	if !strings.Contains(goCode, "FW_LOG") {
+		t.Error("expected FW_LOG env var handling")
+	}
+}
+
+func TestTranspileLogHelperWithConfig(t *testing.T) {
+	source := []byte(`package main
+
+log.config!(level: .debug)
+
+func main() {
+	debug "test"
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	// Config should set default level to debug
+	if !strings.Contains(goCode, "slog.LevelDebug") {
+		t.Error("expected slog.LevelDebug as default level from config")
+	}
+}
+
+func TestTranspileLogHelperNoColorDuplicate(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	info "status", s: color.green("ok")
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	// _fwcolor should appear exactly once (from log helper, not duplicated by color helper)
+	count := strings.Count(goCode, "func _fwcolor(")
+	if count != 1 {
+		t.Errorf("expected exactly 1 _fwcolor definition, got %d", count)
+	}
+}

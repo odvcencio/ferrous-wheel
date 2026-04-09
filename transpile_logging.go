@@ -198,6 +198,34 @@ func (t *fwTranspiler) emitLogConfig(n *gotreesitter.Node) string {
 	return "" // config is consumed at init-time, no inline code
 }
 
+func (t *fwTranspiler) buildLogHelper() string {
+	// Determine defaults from log.config! or fallback
+	level := "slog.LevelInfo"
+	if t.logConfigLevel != "" {
+		switch t.logConfigLevel {
+		case "trace":
+			level = "_fwLevelTrace"
+		case "debug":
+			level = "slog.LevelDebug"
+		case "info":
+			level = "slog.LevelInfo"
+		case "warn":
+			level = "slog.LevelWarn"
+		case "error":
+			level = "slog.LevelError"
+		}
+	}
+
+	// Set import flags needed by the helper
+	t.needsFmt = true
+	t.needsOS = true
+	t.needsTime = true
+	t.needsSlog = true
+	t.needsContext = true
+
+	return fmt.Sprintf(fwlogHelperTemplate, level)
+}
+
 func (t *fwTranspiler) collectLogAttrs(n *gotreesitter.Node) []string {
 	var attrs []string
 	for i := 0; i < int(n.NamedChildCount()); i++ {

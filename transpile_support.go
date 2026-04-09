@@ -339,6 +339,135 @@ func _fwcolor(code string, s string) string {
 }
 `
 
+const fwlogHelperTemplate = `
+
+const _fwLevelTrace = slog.Level(-8)
+
+var _fwlogStart = time.Now()
+
+var _fwlogLevel = %s
+
+type _fwlogHandler struct {
+	level  slog.Level
+	attrs  []slog.Attr
+	groups []string
+	mu     *sync.Mutex
+	w      *os.File
+}
+
+func _fwlogNewHandler(w *os.File, level slog.Level) *_fwlogHandler {
+	return &_fwlogHandler{level: level, w: w, mu: &sync.Mutex{}}
+}
+
+func (h *_fwlogHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.level
+}
+
+func (h *_fwlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var b strings.Builder
+
+	// Relative timestamp
+	elapsed := time.Since(_fwlogStart).Seconds()
+	fmt.Fprintf(&b, "%%5.1fs  ", elapsed)
+
+	// Colored level label
+	label := r.Level.String()
+	switch {
+	case r.Level < slog.LevelDebug:
+		label = "TRACE"
+		if _fwcolorEnabled { label = "\033[2m" + label + "\033[0m" }
+	case r.Level < slog.LevelInfo:
+		label = "DEBUG"
+		if _fwcolorEnabled { label = "\033[90m" + label + "\033[0m" }
+	case r.Level < slog.LevelWarn:
+		label = "INFO "
+		if _fwcolorEnabled { label = "\033[32m" + label + "\033[0m" }
+	case r.Level < slog.LevelError:
+		label = "WARN "
+		if _fwcolorEnabled { label = "\033[33m" + label + "\033[0m" }
+	default:
+		label = "ERROR"
+		if _fwcolorEnabled { label = "\033[31m" + label + "\033[0m" }
+	}
+	b.WriteString(label)
+	b.WriteString("  ")
+
+	// Message
+	b.WriteString(r.Message)
+
+	// Handler-level attrs
+	for _, a := range h.attrs {
+		fmt.Fprintf(&b, "  %%s=%%v", a.Key, a.Value)
+	}
+
+	// Record attrs
+	r.Attrs(func(a slog.Attr) bool {
+		fmt.Fprintf(&b, "  %%s=%%v", a.Key, a.Value)
+		return true
+	})
+
+	b.WriteByte('\n')
+	h.w.WriteString(b.String())
+	return nil
+}
+
+func (h *_fwlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	h2 := *h
+	h2.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
+	return &h2
+}
+
+func (h *_fwlogHandler) WithGroup(name string) slog.Handler {
+	h2 := *h
+	h2.groups = append(append([]string{}, h.groups...), name)
+	return &h2
+}
+
+var _fwcolorEnabled = func() bool {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("FW_NO_COLOR") != "" {
+		return false
+	}
+	fi, err := os.Stderr.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}()
+
+func _fwcolor(code string, s string) string {
+	if !_fwcolorEnabled {
+		return s
+	}
+	return "\033[" + code + "m" + s + "\033[0m"
+}
+
+func init() {
+	level := _fwlogLevel
+
+	// Environment override
+	if envLevel := os.Getenv("FW_LOG"); envLevel != "" {
+		switch strings.ToLower(envLevel) {
+		case "trace":
+			level = _fwLevelTrace
+		case "debug":
+			level = slog.LevelDebug
+		case "info":
+			level = slog.LevelInfo
+		case "warn":
+			level = slog.LevelWarn
+		case "error":
+			level = slog.LevelError
+		}
+	}
+
+	handler := _fwlogNewHandler(os.Stderr, level)
+	slog.SetDefault(slog.New(handler))
+}
+`
+
 const fwlogTimeHelperDef = `
 
 var _fwlogDepth int
@@ -402,7 +531,7 @@ func (t *fwTranspiler) injectGenericTypes(code string) string {
 }
 
 func (t *fwTranspiler) injectSupportCode(code string) string {
-	if !t.needsBreaker && !t.needsThrottle && !t.needsFanIn && !t.needsUnsafeCast && !t.needsColorHelper && !t.needsTimeBlock {
+	if !t.needsBreaker && !t.needsThrottle && !t.needsFanIn && !t.needsUnsafeCast && !t.needsColorHelper && !t.needsTimeBlock && !t.needsLogHelper {
 		return code
 	}
 	var b strings.Builder
@@ -419,7 +548,10 @@ func (t *fwTranspiler) injectSupportCode(code string) string {
 	if t.needsUnsafeCast {
 		b.WriteString(unsafeCastHelperDef)
 	}
-	if t.needsColorHelper {
+	if t.needsLogHelper {
+		b.WriteString(t.buildLogHelper())
+	}
+	if t.needsColorHelper && !t.needsLogHelper {
 		b.WriteString(fwcolorHelperDef)
 	}
 	if t.needsTimeBlock {
@@ -544,6 +676,14 @@ func (t *fwTranspiler) injectImports(code string) string {
 	if t.needsContext {
 		if _, ok := imported["context"]; !ok {
 			needed = append(needed, `"context"`)
+		}
+	}
+	if t.needsLogHelper {
+		if _, ok := imported["strings"]; !ok {
+			needed = append(needed, `"strings"`)
+		}
+		if _, ok := imported["sync"]; !ok {
+			needed = append(needed, `"sync"`)
 		}
 	}
 	if len(needed) == 0 {
