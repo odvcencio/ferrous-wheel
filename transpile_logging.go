@@ -160,6 +160,44 @@ func (t *fwTranspiler) emitLogTimeBlock(n *gotreesitter.Node) string {
 	return b.String()
 }
 
+func (t *fwTranspiler) emitLogConfig(n *gotreesitter.Node) string {
+	t.needsSlog = true
+	t.needsLogHelper = true
+
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		child := n.NamedChild(i)
+		if t.nodeType(child) != "log_config_option" {
+			continue
+		}
+		keyNode := t.childByField(child, "key")
+		if keyNode == nil {
+			continue
+		}
+		key := t.text(keyNode)
+
+		valNode := t.childByField(child, "value")
+		if valNode == nil {
+			continue
+		}
+		// valNode is a log_config_enum_value node; extract the "name" field
+		nameNode := t.childByField(valNode, "name")
+		if nameNode == nil {
+			continue
+		}
+		val := t.text(nameNode)
+
+		switch key {
+		case "level":
+			t.logConfigLevel = val
+		case "format":
+			t.logConfigFormat = val
+		case "time":
+			t.logConfigTime = val
+		}
+	}
+	return "" // config is consumed at init-time, no inline code
+}
+
 func (t *fwTranspiler) collectLogAttrs(n *gotreesitter.Node) []string {
 	var attrs []string
 	for i := 0; i < int(n.NamedChildCount()); i++ {

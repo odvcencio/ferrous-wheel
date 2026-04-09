@@ -325,6 +325,55 @@ func f() {
 	}
 }
 
+func TestTranspileLogConfig(t *testing.T) {
+	source := []byte(`package main
+
+log.config!(level: .info, time: .relative, format: .pretty)
+
+func f() {
+	info "hello"
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	// Config directive should not appear in output
+	if strings.Contains(goCode, "log.config") {
+		t.Error("raw log.config! should not appear in output")
+	}
+	// Should still have slog calls from the info statement
+	if !strings.Contains(goCode, `slog.Info("hello")`) {
+		t.Error("expected slog.Info call")
+	}
+}
+
+func TestTranspileLogConfigDefaultLevel(t *testing.T) {
+	source := []byte(`package main
+
+log.config!(level: .debug)
+
+func f() {
+	debug "test"
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	// Should transpile normally, config consumed silently
+	if strings.Contains(goCode, "log.config") {
+		t.Error("raw log.config! should not appear in output")
+	}
+	if !strings.Contains(goCode, `slog.Debug("test")`) {
+		t.Error("expected slog.Debug call")
+	}
+}
+
 func TestTranspileTimeBlockHelperEmitted(t *testing.T) {
 	source := []byte(`package main
 func f() {
