@@ -1,6 +1,7 @@
 package ferrouswheel
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1073,7 +1074,7 @@ func f() {
 		t.Error("expected log_statement")
 	}
 	if strings.Contains(sexp, "ERROR") {
-		t.Errorf("parse error: %s", sexp)
+		t.Errorf("ERROR: %s", sexp)
 	}
 }
 
@@ -1088,7 +1089,7 @@ func f() {
 		t.Error("expected log_statement")
 	}
 	if strings.Contains(sexp, "ERROR") {
-		t.Errorf("parse error: %s", sexp)
+		t.Errorf("ERROR: %s", sexp)
 	}
 }
 
@@ -1103,7 +1104,7 @@ func f() {
 		t.Error("expected log_statement")
 	}
 	if strings.Contains(sexp, "ERROR") {
-		t.Errorf("parse error: %s", sexp)
+		t.Errorf("ERROR: %s", sexp)
 	}
 }
 
@@ -1118,7 +1119,7 @@ func f() {
 		t.Error("expected log_statement")
 	}
 	if strings.Contains(sexp, "ERROR") {
-		t.Errorf("parse error: %s", sexp)
+		t.Errorf("ERROR: %s", sexp)
 	}
 }
 
@@ -1133,7 +1134,7 @@ func f() {
 		t.Error("expected log_statement")
 	}
 	if strings.Contains(sexp, "ERROR") {
-		t.Errorf("parse error: %s", sexp)
+		t.Errorf("ERROR: %s", sexp)
 	}
 }
 
@@ -1147,8 +1148,29 @@ func f() {
 	if !strings.Contains(sexp, "log_statement") {
 		t.Error("expected log_statement")
 	}
+	if !strings.Contains(sexp, "fstring") {
+		t.Error("expected fstring node in log message")
+	}
 	if strings.Contains(sexp, "ERROR") {
-		t.Errorf("parse error: %s", sexp)
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseLogAllLevels(t *testing.T) {
+	for _, level := range []string{"trace", "debug", "info", "warn", "error", "fatal"} {
+		t.Run(level, func(t *testing.T) {
+			sexp := parseFW(t, fmt.Sprintf(`package main
+func f() {
+    %s "msg"
+}
+`, level))
+			if !strings.Contains(sexp, "log_statement") {
+				t.Error("expected log_statement")
+			}
+			if strings.Contains(sexp, "ERROR") {
+				t.Errorf("ERROR: %s", sexp)
+			}
+		})
 	}
 }
 

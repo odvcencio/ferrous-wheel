@@ -497,7 +497,7 @@ func Grammar() *GrammarType {
 		//
 		// NOTE: message uses _string_literal (not _expression) to avoid grammar
 		// ambiguity where the comma after the message could be parsed as Go's comma
-		// operator within an expression. F-strings are already _string_literal variants.
+		// operator within an expression.
 		g.Define("log_attr", Choice(
 			Seq(Field("key", Sym("identifier")), Str(":"), Field("value", Sym("_expression"))),
 			Field("bare", Sym("identifier")),
@@ -508,7 +508,7 @@ func Grammar() *GrammarType {
 				Str("trace"), Str("debug"), Str("info"),
 				Str("warn"), Str("error"), Str("fatal"),
 			)),
-			Field("message", Sym("_string_literal")),
+			Field("message", Choice(Sym("_string_literal"), Sym("fstring"))),
 			Optional(Repeat1(Seq(Str(","), Sym("log_attr")))),
 		))
 
