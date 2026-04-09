@@ -1413,3 +1413,52 @@ func f() {
 		t.Errorf("ERROR: %s", sexp)
 	}
 }
+
+func TestParseGoTimeUsage(t *testing.T) {
+	sexp := parseFW(t, `package main
+import "time"
+func f() {
+	t := time.Now()
+	_ = t
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if strings.Contains(sexp, "log_time_block") {
+		t.Error("time.Now() should NOT produce log_time_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseGoErrorType(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() error {
+	return nil
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if strings.Contains(sexp, "log_statement") {
+		t.Error("error return type should NOT produce log_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseGoInfoVariable(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	info := getInfo()
+	_ = info
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	// info := is a short var declaration, should NOT be a log_statement
+	if strings.Contains(sexp, "log_statement") {
+		t.Error("info := should NOT produce log_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}

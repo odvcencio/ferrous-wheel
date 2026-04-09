@@ -503,11 +503,11 @@ func Grammar() *GrammarType {
 			Field("bare", Sym("identifier")),
 		))
 
+		// Log level uses identifier so that "info", "debug", etc. are NOT
+		// keyword-extracted.  This keeps them usable as normal Go identifiers
+		// (e.g. info := getInfo()). The transpiler validates the level text.
 		g.Define("log_statement", Seq(
-			Field("level", Choice(
-				Str("trace"), Str("debug"), Str("info"),
-				Str("warn"), Str("error"), Str("fatal"),
-			)),
+			Field("level", Sym("identifier")),
 			Field("message", Choice(Sym("_string_literal"), Sym("fstring"))),
 			Optional(Repeat1(Seq(Str(","), Sym("log_attr")))),
 		))

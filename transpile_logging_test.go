@@ -577,3 +577,20 @@ func deploy(env string, image string) error {
 		t.Errorf("expected at least 4 depth increments for nested time blocks, got %d", depthIncrements)
 	}
 }
+
+func TestTranspileGoTimeImport(t *testing.T) {
+	source := []byte(`package main
+import "time"
+func f() {
+	t := time.Now()
+	_ = t
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if !strings.Contains(goCode, "time.Now()") {
+		t.Error("time.Now() should pass through unchanged")
+	}
+}
