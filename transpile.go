@@ -528,8 +528,18 @@ type fwTranspiler struct {
 	needsBreaker    bool
 	needsThrottle   bool
 	needsFanIn      bool
-	needsUnsafeCast bool
-	lintRan         bool   // true if lint already ran; skip duplicate checks
+	needsUnsafeCast    bool
+	needsSlog          bool   // log/slog import
+	needsContext       bool   // context import (for slog.Log with trace level)
+	needsLogHelper     bool   // pretty-print handler + init (defines _fwLevelTrace const)
+	needsColorHelper   bool   // fwcolor() helper
+	needsTimeBlock     bool   // tree-drawing prefix helper
+	needsFlagHelper    bool   // auto-injected -v/--quiet flags
+	logConfigLevel     string // from log.config! directive
+	logConfigFormat    string // from log.config! directive
+	logConfigTime      string // from log.config! directive
+	timeBlockCounter   int    // unique var names for time blocks
+	lintRan            bool   // true if lint already ran; skip duplicate checks
 	implReceiver    string // non-empty when inside an impl block
 	lastPipeValue   string // set by emitPipeline for selector reconstruction
 	tryTargets      []tryTarget
@@ -1102,6 +1112,9 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitRetry(n)
 	case "breaker_block":
 		return t.emitBreaker(n)
+	// Logging
+	case "log_statement":
+		return t.emitLogStatement(n)
 	case "if_statement":
 		if t.isExpressionPosition(n) {
 			return t.emitIfExpression(n)

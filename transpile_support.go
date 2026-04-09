@@ -484,6 +484,16 @@ func (t *fwTranspiler) injectImports(code string) string {
 			needed = append(needed, `"time"`)
 		}
 	}
+	if t.needsSlog {
+		if _, ok := imported["log/slog"]; !ok {
+			needed = append(needed, `"log/slog"`)
+		}
+	}
+	if t.needsContext {
+		if _, ok := imported["context"]; !ok {
+			needed = append(needed, `"context"`)
+		}
+	}
 	if len(needed) == 0 {
 		return code
 	}
