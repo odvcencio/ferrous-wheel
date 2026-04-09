@@ -512,6 +512,27 @@ func Grammar() *GrammarType {
 			Optional(Repeat1(Seq(Str(","), Sym("log_attr")))),
 		))
 
+		// --- logging: with block (scoped context) ---
+		// with key: value, key2: value2 { body }
+		// with bare_ident, key: value { body }
+		g.Define("log_with_block", Seq(
+			Str("with"),
+			Sym("log_attr"),
+			Optional(Repeat1(Seq(Str(","), Sym("log_attr")))),
+			Sym("block"),
+		))
+
+		// --- logging: time block (named timing) ---
+		// time "name" { body }
+		// time "name", key: value { body }
+		// NOTE: name uses _string_literal to avoid ambiguity (same rationale as log_statement message)
+		g.Define("log_time_block", Seq(
+			Str("time"),
+			Field("name", Choice(Sym("_string_literal"), Sym("fstring"))),
+			Optional(Repeat1(Seq(Str(","), Sym("log_attr")))),
+			Sym("block"),
+		))
+
 		// Wire into grammar
 		for _, r := range []*Rule{
 			Sym("enum_declaration"),
@@ -575,6 +596,8 @@ func Grammar() *GrammarType {
 			Sym("breaker_block"),
 			// Logging
 			Sym("log_statement"),
+			Sym("log_with_block"),
+			Sym("log_time_block"),
 		} {
 			AppendChoice(g, "_statement", r)
 		}
@@ -693,6 +716,8 @@ func Grammar() *GrammarType {
 		// --- Logging feature conflicts ---
 		AddConflict(g, "_statement", "log_statement")
 		AddConflict(g, "log_statement", "log_attr")
+		AddConflict(g, "_statement", "log_with_block")
+		AddConflict(g, "_statement", "log_time_block")
 
 		// fan in/out both start with "fan"
 		AddConflict(g, "fan_in_expression", "fan_out_block")

@@ -1242,3 +1242,112 @@ func main() error {
 		t.Error("expected safe_navigation inside postfix_try")
 	}
 }
+
+func TestParseWithBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+    with request_id: rid, tenant: t {
+        info "handling"
+    }
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_with_block") {
+		t.Error("expected log_with_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseWithBlockBareIdents(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+    with service, env {
+        info "boot"
+    }
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_with_block") {
+		t.Error("expected log_with_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseTimeBlock(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+    time "deploy" {
+        info "starting"
+    }
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_time_block") {
+		t.Error("expected log_time_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseTimeBlockWithAttrs(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+    time "query", sql: stmt {
+        fetch()
+    }
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_time_block") {
+		t.Error("expected log_time_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseNestedTimeBlocks(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+    time "outer" {
+        time "inner" {
+            work()
+        }
+    }
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if strings.Count(sexp, "log_time_block") != 2 {
+		t.Error("expected two nested log_time_blocks")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
+
+func TestParseWithNestedTime(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+    with request_id: rid {
+        time "handle" {
+            info "done"
+        }
+    }
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_with_block") {
+		t.Error("expected log_with_block")
+	}
+	if !strings.Contains(sexp, "log_time_block") {
+		t.Error("expected log_time_block")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("ERROR: %s", sexp)
+	}
+}
