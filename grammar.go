@@ -490,6 +490,28 @@ func Grammar() *GrammarType {
 			Sym("block"),
 		))
 
+		// --- logging: level statements ---
+		// info "message"
+		// info "message", key: value, key2: value2
+		// info "message", bare_ident, key: value
+		//
+		// NOTE: message uses _string_literal (not _expression) to avoid grammar
+		// ambiguity where the comma after the message could be parsed as Go's comma
+		// operator within an expression. F-strings are already _string_literal variants.
+		g.Define("log_attr", Choice(
+			Seq(Field("key", Sym("identifier")), Str(":"), Field("value", Sym("_expression"))),
+			Field("bare", Sym("identifier")),
+		))
+
+		g.Define("log_statement", Seq(
+			Field("level", Choice(
+				Str("trace"), Str("debug"), Str("info"),
+				Str("warn"), Str("error"), Str("fatal"),
+			)),
+			Field("message", Sym("_string_literal")),
+			Optional(Repeat1(Seq(Str(","), Sym("log_attr")))),
+		))
+
 		// Wire into grammar
 		for _, r := range []*Rule{
 			Sym("enum_declaration"),
@@ -551,6 +573,8 @@ func Grammar() *GrammarType {
 			Sym("throttle_block"),
 			Sym("retry_block"),
 			Sym("breaker_block"),
+			// Logging
+			Sym("log_statement"),
 		} {
 			AppendChoice(g, "_statement", r)
 		}
@@ -665,6 +689,10 @@ func Grammar() *GrammarType {
 		// pipeline_expression has PrecLeft(1) like other binary operators
 		AddConflict(g, "pipeline_expression", "binary_expression")
 		AddConflict(g, "pipeline_expression", "_expression")
+
+		// --- Logging feature conflicts ---
+		AddConflict(g, "_statement", "log_statement")
+		AddConflict(g, "log_statement", "log_attr")
 
 		// fan in/out both start with "fan"
 		AddConflict(g, "fan_in_expression", "fan_out_block")

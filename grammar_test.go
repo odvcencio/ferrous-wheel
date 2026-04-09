@@ -1059,6 +1059,100 @@ func f() {
 }
 
 // =============================================
+// LOG LEVEL STATEMENT PARSE TESTS
+// =============================================
+
+func TestParseLogInfo(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	info "user registered", user_id: id, email: email
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_statement") {
+		t.Error("expected log_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("parse error: %s", sexp)
+	}
+}
+
+func TestParseLogTrace(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	trace "parser state", node: n, depth: d
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_statement") {
+		t.Error("expected log_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("parse error: %s", sexp)
+	}
+}
+
+func TestParseLogFatal(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	fatal "config missing", path: configPath
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_statement") {
+		t.Error("expected log_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("parse error: %s", sexp)
+	}
+}
+
+func TestParseLogBareIdentifiers(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	info "registered", user_id, email
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_statement") {
+		t.Error("expected log_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("parse error: %s", sexp)
+	}
+}
+
+func TestParseLogNoAttrs(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	info "started"
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_statement") {
+		t.Error("expected log_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("parse error: %s", sexp)
+	}
+}
+
+func TestParseLogFString(t *testing.T) {
+	sexp := parseFW(t, `package main
+func f() {
+	info f"processed {n} items", count: n
+}
+`)
+	t.Logf("SExpr: %s", sexp)
+	if !strings.Contains(sexp, "log_statement") {
+		t.Error("expected log_statement")
+	}
+	if strings.Contains(sexp, "ERROR") {
+		t.Errorf("parse error: %s", sexp)
+	}
+}
+
+// =============================================
 // POSTFIX ? ERROR PROPAGATION PARSE TESTS
 // =============================================
 
