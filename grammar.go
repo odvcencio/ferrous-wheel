@@ -515,8 +515,10 @@ func Grammar() *GrammarType {
 		// --- logging: with block (scoped context) ---
 		// with key: value, key2: value2 { body }
 		// with bare_ident, key: value { body }
+		// NOTE: uses identifier (not Str("with")) to prevent keyword extraction.
+		// The transpiler validates the identifier text is "with".
 		g.Define("log_with_block", Seq(
-			Str("with"),
+			Sym("identifier"),
 			Sym("log_attr"),
 			Optional(Repeat1(Seq(Str(","), Sym("log_attr")))),
 			Sym("block"),
@@ -525,9 +527,11 @@ func Grammar() *GrammarType {
 		// --- logging: time block (named timing) ---
 		// time "name" { body }
 		// time "name", key: value { body }
-		// NOTE: name uses _string_literal to avoid ambiguity (same rationale as log_statement message)
+		// NOTE: uses identifier (not Str("time")) to prevent keyword extraction.
+		// The transpiler validates the identifier text is "time".
+		// Name uses _string_literal to avoid ambiguity (same rationale as log_statement message).
 		g.Define("log_time_block", Seq(
-			Str("time"),
+			Sym("identifier"),
 			Field("name", Choice(Sym("_string_literal"), Sym("fstring"))),
 			Optional(Repeat1(Seq(Str(","), Sym("log_attr")))),
 			Sym("block"),
