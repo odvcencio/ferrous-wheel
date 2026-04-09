@@ -76,6 +76,15 @@ func init() {
 		// Type-aware rules:
 		&redundantTryRule{},
 		&unnecessarySafeNavRule{},
+		// Logging rules:
+		&bareErrorRule{},
+		&bareFatalRule{},
+		&debugNoAttrsRule{},
+		&timeEmptyBlockRule{},
+		&withNoLogsRule{},
+		&withSingleLogRule{},
+		&nestedTimeSameNameRule{},
+		&logInHotLoopRule{},
 	}
 	scopeRules = []ScopeLintRule{
 		&unusedLetRule{},
@@ -1102,4 +1111,305 @@ func containsExitNode(n *gotreesitter.Node, lang *gotreesitter.Language) bool {
 		}
 	}
 	return false
+}
+
+// ---------- logging lint helpers ----------
+
+// logStatementLevel returns the level keyword text for a log_statement node.
+// The level is the first (anonymous) child token.
+func logStatementLevel(n *gotreesitter.Node, ctx *LintContext) string {
+	if n.ChildCount() == 0 {
+		return ""
+	}
+	first := n.Child(0)
+	if first == nil {
+		return ""
+	}
+	return string(ctx.Src[first.StartByte():first.EndByte()])
+}
+
+// countLogAttrs counts the number of log_attr named children of n.
+func countLogAttrs(n *gotreesitter.Node, lang *gotreesitter.Language) int {
+	count := 0
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		if n.NamedChild(i).Type(lang) == "log_attr" {
+			count++
+		}
+	}
+	return count
+}
+
+// countLogDescendants counts log_statement, log_time_block, and log_with_block
+// descendants inside a subtree (not counting the root node itself).
+func countLogDescendants(n *gotreesitter.Node, lang *gotreesitter.Language) int {
+	count := 0
+	var walk func(nd *gotreesitter.Node)
+	walk = func(nd *gotreesitter.Node) {
+		if nd == nil {
+			return
+		}
+		for i := 0; i < int(nd.ChildCount()); i++ {
+			child := nd.Child(i)
+			if child == nil {
+				continue
+			}
+			switch child.Type(lang) {
+			case "log_statement", "log_time_block", "log_with_block":
+				count++
+			}
+			walk(child)
+		}
+	}
+	walk(n)
+	return count
+}
+
+// ---------- bare-error rule ----------
+
+type bareErrorRule struct{}
+
+func (r *bareErrorRule) Name() string           { return "bare-error" }
+func (r *bareErrorRule) Description() string    { return "error log with no context attributes" }
+func (r *bareErrorRule) Severity() LintSeverity { return LintWarning }
+
+func (r *bareErrorRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "log_statement" {
+		return nil
+	}
+	if logStatementLevel(n, ctx) != "error" {
+		return nil
+	}
+	if countLogAttrs(n, ctx.Lang) > 0 {
+		return nil
+	}
+	pt := n.StartPoint()
+	return []LintDiagnostic{{
+		Rule:     r.Name(),
+		Line:     int(pt.Row) + 1,
+		Col:      int(pt.Column) + 1,
+		Message:  "error log with no context attributes",
+		Severity: r.Severity(),
+	}}
+}
+
+// ---------- bare-fatal rule ----------
+
+type bareFatalRule struct{}
+
+func (r *bareFatalRule) Name() string           { return "bare-fatal" }
+func (r *bareFatalRule) Description() string    { return "fatal log with no context attributes" }
+func (r *bareFatalRule) Severity() LintSeverity { return LintWarning }
+
+func (r *bareFatalRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "log_statement" {
+		return nil
+	}
+	if logStatementLevel(n, ctx) != "fatal" {
+		return nil
+	}
+	if countLogAttrs(n, ctx.Lang) > 0 {
+		return nil
+	}
+	pt := n.StartPoint()
+	return []LintDiagnostic{{
+		Rule:     r.Name(),
+		Line:     int(pt.Row) + 1,
+		Col:      int(pt.Column) + 1,
+		Message:  "fatal log with no context attributes",
+		Severity: r.Severity(),
+	}}
+}
+
+// ---------- debug-no-attrs rule ----------
+
+type debugNoAttrsRule struct{}
+
+func (r *debugNoAttrsRule) Name() string           { return "debug-no-attrs" }
+func (r *debugNoAttrsRule) Description() string    { return "debug/trace log with no attributes" }
+func (r *debugNoAttrsRule) Severity() LintSeverity { return LintInfo }
+
+func (r *debugNoAttrsRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "log_statement" {
+		return nil
+	}
+	level := logStatementLevel(n, ctx)
+	if level != "debug" && level != "trace" {
+		return nil
+	}
+	if countLogAttrs(n, ctx.Lang) > 0 {
+		return nil
+	}
+	pt := n.StartPoint()
+	return []LintDiagnostic{{
+		Rule:     r.Name(),
+		Line:     int(pt.Row) + 1,
+		Col:      int(pt.Column) + 1,
+		Message:  "debug/trace log with no attributes",
+		Severity: r.Severity(),
+	}}
+}
+
+// ---------- time-empty-block rule ----------
+
+type timeEmptyBlockRule struct{}
+
+func (r *timeEmptyBlockRule) Name() string           { return "time-empty-block" }
+func (r *timeEmptyBlockRule) Description() string    { return "time block with empty body" }
+func (r *timeEmptyBlockRule) Severity() LintSeverity { return LintWarning }
+
+func (r *timeEmptyBlockRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "log_time_block" {
+		return nil
+	}
+	// Find the block child
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		child := n.NamedChild(i)
+		if child.Type(ctx.Lang) == "block" {
+			if child.NamedChildCount() == 0 {
+				pt := n.StartPoint()
+				return []LintDiagnostic{{
+					Rule:     r.Name(),
+					Line:     int(pt.Row) + 1,
+					Col:      int(pt.Column) + 1,
+					Message:  "time block with empty body",
+					Severity: r.Severity(),
+				}}
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// ---------- with-no-logs rule ----------
+
+type withNoLogsRule struct{}
+
+func (r *withNoLogsRule) Name() string           { return "with-no-logs" }
+func (r *withNoLogsRule) Description() string    { return "with block contains no log calls" }
+func (r *withNoLogsRule) Severity() LintSeverity { return LintWarning }
+
+func (r *withNoLogsRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "log_with_block" {
+		return nil
+	}
+	// Find the block child and count log descendants
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		child := n.NamedChild(i)
+		if child.Type(ctx.Lang) == "block" {
+			if countLogDescendants(child, ctx.Lang) == 0 {
+				pt := n.StartPoint()
+				return []LintDiagnostic{{
+					Rule:     r.Name(),
+					Line:     int(pt.Row) + 1,
+					Col:      int(pt.Column) + 1,
+					Message:  "with block contains no log calls",
+					Severity: r.Severity(),
+				}}
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// ---------- with-single-log rule ----------
+
+type withSingleLogRule struct{}
+
+func (r *withSingleLogRule) Name() string        { return "with-single-log" }
+func (r *withSingleLogRule) Description() string { return "with block wraps a single log call" }
+func (r *withSingleLogRule) Severity() LintSeverity { return LintInfo }
+
+func (r *withSingleLogRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "log_with_block" {
+		return nil
+	}
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		child := n.NamedChild(i)
+		if child.Type(ctx.Lang) == "block" {
+			if countLogDescendants(child, ctx.Lang) == 1 {
+				pt := n.StartPoint()
+				return []LintDiagnostic{{
+					Rule:     r.Name(),
+					Line:     int(pt.Row) + 1,
+					Col:      int(pt.Column) + 1,
+					Message:  "with block wraps a single log call — consider inlining attributes",
+					Severity: r.Severity(),
+				}}
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// ---------- nested-time-same-name rule ----------
+
+type nestedTimeSameNameRule struct{}
+
+func (r *nestedTimeSameNameRule) Name() string        { return "nested-time-same-name" }
+func (r *nestedTimeSameNameRule) Description() string { return "nested time blocks with identical name" }
+func (r *nestedTimeSameNameRule) Severity() LintSeverity { return LintWarning }
+
+func (r *nestedTimeSameNameRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "log_time_block" {
+		return nil
+	}
+	// Get this node's name field text
+	nameNode := n.ChildByFieldName("name", ctx.Lang)
+	if nameNode == nil {
+		return nil
+	}
+	myName := string(ctx.Src[nameNode.StartByte():nameNode.EndByte()])
+
+	// Walk up parent chain looking for another log_time_block with the same name
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		if p.Type(ctx.Lang) == "log_time_block" {
+			pName := p.ChildByFieldName("name", ctx.Lang)
+			if pName != nil {
+				parentName := string(ctx.Src[pName.StartByte():pName.EndByte()])
+				if parentName == myName {
+					pt := n.StartPoint()
+					return []LintDiagnostic{{
+						Rule:     r.Name(),
+						Line:     int(pt.Row) + 1,
+						Col:      int(pt.Column) + 1,
+						Message:  "nested time blocks with identical name",
+						Severity: r.Severity(),
+					}}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ---------- log-in-hot-loop rule ----------
+
+type logInHotLoopRule struct{}
+
+func (r *logInHotLoopRule) Name() string           { return "log-in-hot-loop" }
+func (r *logInHotLoopRule) Description() string    { return "log call inside loop" }
+func (r *logInHotLoopRule) Severity() LintSeverity { return LintInfo }
+
+func (r *logInHotLoopRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	if n.Type(ctx.Lang) != "log_statement" {
+		return nil
+	}
+	// Walk parent chain looking for loop constructs
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		switch p.Type(ctx.Lang) {
+		case "repeat_statement", "for_statement", "for_in_statement", "for_in_index_statement":
+			pt := n.StartPoint()
+			return []LintDiagnostic{{
+				Rule:     r.Name(),
+				Line:     int(pt.Row) + 1,
+				Col:      int(pt.Column) + 1,
+				Message:  "log call inside loop may produce excessive output",
+				Severity: r.Severity(),
+			}}
+		}
+	}
+	return nil
 }

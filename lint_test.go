@@ -364,3 +364,231 @@ func TestLintSeverityString(t *testing.T) {
 		}
 	}
 }
+
+// ---------- bare-error tests ----------
+
+func TestLintBareError(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	error "something failed"
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "bare-error" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected bare-error diagnostic")
+	}
+}
+
+func TestLintBareErrorWithAttrs(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	error "something failed", err: e
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	for _, d := range diags {
+		if d.Rule == "bare-error" {
+			t.Error("should not flag error with attrs")
+		}
+	}
+}
+
+// ---------- bare-fatal tests ----------
+
+func TestLintBareFatal(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	fatal "crash"
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "bare-fatal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected bare-fatal diagnostic")
+	}
+}
+
+// ---------- debug-no-attrs tests ----------
+
+func TestLintDebugNoAttrs(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	debug "checking"
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "debug-no-attrs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected debug-no-attrs diagnostic")
+	}
+}
+
+// ---------- time-empty-block tests ----------
+
+func TestLintTimeEmptyBlock(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	time "noop" {}
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "time-empty-block" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected time-empty-block diagnostic")
+	}
+}
+
+// ---------- with-no-logs tests ----------
+
+func TestLintWithNoLogs(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	with service: "api" {
+		doWork()
+	}
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "with-no-logs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected with-no-logs diagnostic")
+	}
+}
+
+// ---------- with-single-log tests ----------
+
+func TestLintWithSingleLog(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	with service: "api" {
+		info "boot", service: "api"
+	}
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "with-single-log" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected with-single-log diagnostic")
+	}
+}
+
+// ---------- nested-time-same-name tests ----------
+
+func TestLintNestedTimeSameName(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	time "op" {
+		time "op" {
+			work()
+		}
+	}
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "nested-time-same-name" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected nested-time-same-name diagnostic")
+	}
+}
+
+// ---------- log-in-hot-loop tests ----------
+
+func TestLintLogInHotLoop(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	repeat 1000 {
+		info "iteration"
+	}
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "log-in-hot-loop" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected log-in-hot-loop diagnostic")
+	}
+}
+
+func TestLintLogInHotLoopNegative(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	info "not in a loop"
+}
+`)
+	diags, err := Lint(source)
+	if err != nil {
+		t.Fatalf("lint: %v", err)
+	}
+	for _, d := range diags {
+		if d.Rule == "log-in-hot-loop" {
+			t.Error("should not flag log outside loop")
+		}
+	}
+}
