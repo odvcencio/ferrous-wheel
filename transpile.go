@@ -507,43 +507,43 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 }
 
 type fwTranspiler struct {
-	src             []byte
-	lang            *gotreesitter.Language
-	sourceFile      string // original .fw filename for //line directives
-	typeEnv         *TypeEnv
-	inferCtx        *InferenceContext
-	warnings        []Warning
-	transpileErrors []error
-	needsReflect    bool
-	needsFmt        bool
-	needsJSON       bool
-	needsResultType bool
-	needsOptionType bool
-	needsUnsafe     bool
-	needsRuntime    bool
-	needsOS         bool
-	needsSyscall    bool
-	needsSync       bool
-	needsTime       bool
-	needsBreaker    bool
-	needsThrottle   bool
-	needsFanIn      bool
-	needsUnsafeCast    bool
-	needsSlog          bool   // log/slog import
-	needsContext       bool   // context import (for slog.Log with trace level)
-	needsLogHelper     bool   // pretty-print handler + init (defines _fwLevelTrace const)
-	needsColorHelper   bool   // fwcolor() helper
-	needsTimeBlock     bool   // tree-drawing prefix helper
-	needsFlagHelper    bool   // auto-injected -v/--quiet flags
-	logConfigLevel     string // from log.config! directive
-	logConfigFormat    string // from log.config! directive
-	logConfigTime      string // from log.config! directive
-	timeBlockCounter   int    // unique var names for time blocks
-	lintRan            bool   // true if lint already ran; skip duplicate checks
-	implReceiver    string // non-empty when inside an impl block
-	lastPipeValue   string // set by emitPipeline for selector reconstruction
-	tryTargets      []tryTarget
-	tryCounter      int
+	src              []byte
+	lang             *gotreesitter.Language
+	sourceFile       string // original .fw filename for //line directives
+	typeEnv          *TypeEnv
+	inferCtx         *InferenceContext
+	warnings         []Warning
+	transpileErrors  []error
+	needsReflect     bool
+	needsFmt         bool
+	needsJSON        bool
+	needsResultType  bool
+	needsOptionType  bool
+	needsUnsafe      bool
+	needsRuntime     bool
+	needsOS          bool
+	needsSyscall     bool
+	needsSync        bool
+	needsTime        bool
+	needsBreaker     bool
+	needsThrottle    bool
+	needsFanIn       bool
+	needsUnsafeCast  bool
+	needsSlog        bool   // log/slog import
+	needsContext     bool   // context import (for slog.Log with trace level)
+	needsLogHelper   bool   // pretty-print handler + init (defines _fwLevelTrace const)
+	needsColorHelper bool   // fwcolor() helper
+	needsTimeBlock   bool   // tree-drawing prefix helper
+	needsFlagHelper  bool   // auto-injected -v/--quiet flags
+	logConfigLevel   string // from log.config! directive
+	logConfigFormat  string // from log.config! directive
+	logConfigTime    string // from log.config! directive
+	timeBlockCounter int    // unique var names for time blocks
+	lintRan          bool   // true if lint already ran; skip duplicate checks
+	implReceiver     string // non-empty when inside an impl block
+	lastPipeValue    string // set by emitPipeline for selector reconstruction
+	tryTargets       []tryTarget
+	tryCounter       int
 }
 
 type tryTargetKind int

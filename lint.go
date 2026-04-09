@@ -1317,8 +1317,8 @@ func (r *withNoLogsRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDia
 
 type withSingleLogRule struct{}
 
-func (r *withSingleLogRule) Name() string        { return "with-single-log" }
-func (r *withSingleLogRule) Description() string { return "with block wraps a single log call" }
+func (r *withSingleLogRule) Name() string           { return "with-single-log" }
+func (r *withSingleLogRule) Description() string    { return "with block wraps a single log call" }
 func (r *withSingleLogRule) Severity() LintSeverity { return LintInfo }
 
 func (r *withSingleLogRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
@@ -1348,8 +1348,10 @@ func (r *withSingleLogRule) Check(n *gotreesitter.Node, ctx *LintContext) []Lint
 
 type nestedTimeSameNameRule struct{}
 
-func (r *nestedTimeSameNameRule) Name() string        { return "nested-time-same-name" }
-func (r *nestedTimeSameNameRule) Description() string { return "nested time blocks with identical name" }
+func (r *nestedTimeSameNameRule) Name() string { return "nested-time-same-name" }
+func (r *nestedTimeSameNameRule) Description() string {
+	return "nested time blocks with identical name"
+}
 func (r *nestedTimeSameNameRule) Severity() LintSeverity { return LintWarning }
 
 func (r *nestedTimeSameNameRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
