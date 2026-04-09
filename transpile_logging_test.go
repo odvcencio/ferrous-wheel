@@ -112,6 +112,63 @@ func f() {
 	}
 }
 
+func TestTranspileColorInLog(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	info "status", s: color.green("ok")
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "_fwcolor(") {
+		t.Error("expected _fwcolor() call")
+	}
+	if !strings.Contains(goCode, "32") { // green ANSI code
+		t.Error("expected green ANSI code 32")
+	}
+}
+
+func TestTranspileColorNested(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	info "alert", s: color.bold(color.red("FAIL"))
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Count(goCode, "_fwcolor(") < 2 {
+		t.Error("expected nested _fwcolor() calls")
+	}
+}
+
+func TestTranspileColorHelperEmitted(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	info "status", s: color.green("ok")
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func _fwcolor(") {
+		t.Error("expected _fwcolor helper definition")
+	}
+	if !strings.Contains(goCode, "NO_COLOR") {
+		t.Error("expected NO_COLOR env var check")
+	}
+}
+
 func TestTranspileLogImports(t *testing.T) {
 	source := []byte(`package main
 func f() {

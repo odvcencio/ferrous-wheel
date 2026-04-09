@@ -318,6 +318,27 @@ func _fwFanIn(chans ...interface{}) <-chan interface{} {
 }
 `
 
+const fwcolorHelperDef = `
+
+var _fwcolorEnabled = func() bool {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("FW_NO_COLOR") != "" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}()
+
+func _fwcolor(code string, s string) string {
+	if !_fwcolorEnabled {
+		return s
+	}
+	return "\033[" + code + "m" + s + "\033[0m"
+}
+`
+
 const unsafeCastHelperDef = `
 func _fwUnsafeCast[To any, From any](from From) To {
 	var out To
@@ -356,7 +377,7 @@ func (t *fwTranspiler) injectGenericTypes(code string) string {
 }
 
 func (t *fwTranspiler) injectSupportCode(code string) string {
-	if !t.needsBreaker && !t.needsThrottle && !t.needsFanIn && !t.needsUnsafeCast {
+	if !t.needsBreaker && !t.needsThrottle && !t.needsFanIn && !t.needsUnsafeCast && !t.needsColorHelper {
 		return code
 	}
 	var b strings.Builder
@@ -372,6 +393,9 @@ func (t *fwTranspiler) injectSupportCode(code string) string {
 	}
 	if t.needsUnsafeCast {
 		b.WriteString(unsafeCastHelperDef)
+	}
+	if t.needsColorHelper {
+		b.WriteString(fwcolorHelperDef)
 	}
 	return b.String()
 }

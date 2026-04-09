@@ -54,6 +54,38 @@ func (t *fwTranspiler) emitLogStatement(n *gotreesitter.Node) string {
 	return b.String()
 }
 
+var colorStyleToANSI = map[string]string{
+	"red":       "31",
+	"green":     "32",
+	"yellow":    "33",
+	"blue":      "34",
+	"magenta":   "35",
+	"cyan":      "36",
+	"gray":      "90",
+	"bold":      "1",
+	"dim":       "2",
+	"italic":    "3",
+	"underline": "4",
+}
+
+func (t *fwTranspiler) emitColorCall(n *gotreesitter.Node) string {
+	t.needsColorHelper = true
+	t.needsFmt = true // generated code uses fmt.Sprint
+	t.needsOS = true  // color helper uses os.Stdout.Stat and os.Getenv
+
+	styleNode := t.childByField(n, "style")
+	valueNode := t.childByField(n, "value")
+	if styleNode == nil || valueNode == nil {
+		return t.text(n)
+	}
+
+	style := t.text(styleNode)
+	code := colorStyleToANSI[style]
+	val := t.emit(valueNode)
+
+	return fmt.Sprintf("_fwcolor(%q, fmt.Sprint(%s))", code, val)
+}
+
 func (t *fwTranspiler) collectLogAttrs(n *gotreesitter.Node) []string {
 	var attrs []string
 	for i := 0; i < int(n.NamedChildCount()); i++ {
