@@ -253,3 +253,93 @@ func f() {
 		t.Error("expected nested .With() calls")
 	}
 }
+
+func TestTranspileTimeBlock(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	time "deploy" {
+		info "working"
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, `"deploy"`) {
+		t.Error("expected deploy name in output")
+	}
+	if !strings.Contains(goCode, "time.Now()") {
+		t.Error("expected time.Now() call")
+	}
+	if !strings.Contains(goCode, "time.Since") {
+		t.Error("expected time.Since for duration")
+	}
+	if !strings.Contains(goCode, "_fwlogDepth") {
+		t.Error("expected depth tracking")
+	}
+}
+
+func TestTranspileTimeBlockWithAttrs(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	time "query", sql: stmt {
+		fetch()
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, `"sql", stmt`) {
+		t.Error("expected sql attr in time block")
+	}
+}
+
+func TestTranspileTimeBlockNested(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	time "outer" {
+		time "inner" {
+			work()
+		}
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if strings.Count(goCode, "_fwlogDepth++") != 2 {
+		t.Error("expected two depth increments for nesting")
+	}
+	if strings.Count(goCode, "_fwlogDepth--") != 2 {
+		t.Error("expected two depth decrements for nesting")
+	}
+}
+
+func TestTranspileTimeBlockHelperEmitted(t *testing.T) {
+	source := []byte(`package main
+func f() {
+	time "op" {
+		work()
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	t.Logf("Go:\n%s", goCode)
+
+	if !strings.Contains(goCode, "func _fwlogTreePrefix(") {
+		t.Error("expected tree prefix helper")
+	}
+}

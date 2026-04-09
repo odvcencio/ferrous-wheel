@@ -339,6 +339,31 @@ func _fwcolor(code string, s string) string {
 }
 `
 
+const fwlogTimeHelperDef = `
+
+var _fwlogDepth int
+
+func _fwlogTreePrefix() string {
+	var b strings.Builder
+	for i := 0; i < _fwlogDepth; i++ {
+		b.WriteString("│ ")
+	}
+	return b.String()
+}
+
+func _fwlogTreeClose() string {
+	var b strings.Builder
+	for i := 0; i < _fwlogDepth; i++ {
+		if i == _fwlogDepth-1 {
+			b.WriteString("└ ")
+		} else {
+			b.WriteString("│ ")
+		}
+	}
+	return b.String()
+}
+`
+
 const unsafeCastHelperDef = `
 func _fwUnsafeCast[To any, From any](from From) To {
 	var out To
@@ -377,7 +402,7 @@ func (t *fwTranspiler) injectGenericTypes(code string) string {
 }
 
 func (t *fwTranspiler) injectSupportCode(code string) string {
-	if !t.needsBreaker && !t.needsThrottle && !t.needsFanIn && !t.needsUnsafeCast && !t.needsColorHelper {
+	if !t.needsBreaker && !t.needsThrottle && !t.needsFanIn && !t.needsUnsafeCast && !t.needsColorHelper && !t.needsTimeBlock {
 		return code
 	}
 	var b strings.Builder
@@ -396,6 +421,9 @@ func (t *fwTranspiler) injectSupportCode(code string) string {
 	}
 	if t.needsColorHelper {
 		b.WriteString(fwcolorHelperDef)
+	}
+	if t.needsTimeBlock {
+		b.WriteString(fwlogTimeHelperDef)
 	}
 	return b.String()
 }

@@ -121,6 +121,45 @@ func (t *fwTranspiler) emitLogWithBlock(n *gotreesitter.Node) string {
 	return b.String()
 }
 
+func (t *fwTranspiler) emitLogTimeBlock(n *gotreesitter.Node) string {
+	t.needsSlog = true
+	t.needsLogHelper = true
+	t.needsTime = true
+	t.needsTimeBlock = true
+
+	nameNode := t.childByField(n, "name")
+	if nameNode == nil {
+		return t.text(n)
+	}
+	name := t.emit(nameNode)
+
+	attrs := t.collectLogAttrs(n)
+	block := t.findBlock(n)
+
+	var b strings.Builder
+	b.WriteString("{\n")
+
+	// Entry line: ⏱ name
+	if len(attrs) > 0 {
+		fmt.Fprintf(&b, "\tslog.Info(_fwlogTreePrefix()+\"⏱ \"+%s, %s)\n", name, strings.Join(attrs, ", "))
+	} else {
+		fmt.Fprintf(&b, "\tslog.Info(_fwlogTreePrefix()+\"⏱ \"+%s)\n", name)
+	}
+	b.WriteString("\t_fwlogDepth++\n")
+	fmt.Fprintf(&b, "\t_fwTimeStart%d := time.Now()\n", t.timeBlockCounter)
+
+	// Body
+	fmt.Fprintf(&b, "\t%s\n", block)
+
+	// Exit line: name + duration
+	b.WriteString("\t_fwlogDepth--\n")
+	fmt.Fprintf(&b, "\tslog.Info(_fwlogTreeClose()+%s, \"duration\", time.Since(_fwTimeStart%d))\n", name, t.timeBlockCounter)
+	t.timeBlockCounter++
+	b.WriteString("}")
+
+	return b.String()
+}
+
 func (t *fwTranspiler) collectLogAttrs(n *gotreesitter.Node) []string {
 	var attrs []string
 	for i := 0; i < int(n.NamedChildCount()); i++ {

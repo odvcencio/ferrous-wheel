@@ -1119,6 +1119,8 @@ func (t *fwTranspiler) emit(n *gotreesitter.Node) string {
 		return t.emitColorCall(n)
 	case "log_with_block":
 		return t.emitLogWithBlock(n)
+	case "log_time_block":
+		return t.emitLogTimeBlock(n)
 	case "if_statement":
 		if t.isExpressionPosition(n) {
 			return t.emitIfExpression(n)
