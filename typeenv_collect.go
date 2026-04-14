@@ -94,6 +94,15 @@ type collector struct {
 }
 
 func (c *collector) text(n *gotreesitter.Node) string {
+	// nil-safe — many CST traversals call text() on optional fields
+	// like the explicit type of a const/var declaration. Returning ""
+	// for a nil node lets callers like collectConstDecl/collectVarDecl
+	// pass `childByField(spec, "type")` directly without a per-call
+	// nil check, and produces the same downstream behavior as
+	// "no type annotation present".
+	if n == nil {
+		return ""
+	}
 	return string(c.src[n.StartByte():n.EndByte()])
 }
 

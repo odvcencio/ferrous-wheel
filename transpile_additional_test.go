@@ -5,6 +5,82 @@ import (
 	"testing"
 )
 
+// TestTranspileUntypedTopLevelConstNoCrash regression-protects the
+// nil-text panic in collectConstDecl (and collectVarDecl). Untyped
+// const/var declarations have no `type` field on the spec node, so
+// `childByField(spec, "type")` returns nil. Before the fix, passing
+// nil to collector.text() dereferenced a nil node inside
+// gotreesitter.(*Node).StartByte() and SIGSEGV'd the whole CLI on any
+// .fw file with a top-level `const x = 42` or `var y = "hi"`.
+//
+// Bug discovered while writing scripts/og-gen.fw in the example.dev
+// repo. Trivial to reproduce; previously took ferrous-wheel down for
+// any non-trivial real-world script.
+func TestTranspileUntypedTopLevelConstNoCrash(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "single untyped const",
+			source: `package main
+
+import "fmt"
+
+const myConst = 42
+
+func main() {
+	fmt.Println(myConst)
+}
+`,
+			want: "const myConst = 42",
+		},
+		{
+			name: "block untyped const",
+			source: `package main
+
+import "fmt"
+
+const (
+	a = 1
+	b = 2
+)
+
+func main() {
+	fmt.Println(a, b)
+}
+`,
+			want: "a = 1",
+		},
+		{
+			name: "single untyped var",
+			source: `package main
+
+import "fmt"
+
+var myVar = "hello"
+
+func main() {
+	fmt.Println(myVar)
+}
+`,
+			want: `myVar = "hello"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			goCode, err := Transpile([]byte(tc.source))
+			if err != nil {
+				t.Fatalf("transpile: %v", err)
+			}
+			if !strings.Contains(goCode, tc.want) {
+				t.Fatalf("expected %q in output, got:\n%s", tc.want, goCode)
+			}
+		})
+	}
+}
+
 func TestTranspileTryShortVarReturn(t *testing.T) {
 	source := []byte(`package main
 

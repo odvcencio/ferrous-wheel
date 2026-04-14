@@ -3,7 +3,7 @@ module github.com/odvcencio/ferrous-wheel
 go 1.25.0
 
 require (
-	github.com/odvcencio/gotreesitter v0.10.1
+	github.com/odvcencio/gotreesitter v0.13.4
 	golang.org/x/tools v0.43.0
 )
 
