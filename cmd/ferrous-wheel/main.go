@@ -161,8 +161,61 @@ func printWarnings(w io.Writer, warnings []ferrouswheel.Warning) {
 	}
 }
 
-// writeTempProject writes Go source + go.mod to a temp directory and returns the path.
-func writeTempProject(goCode string) (string, func(), error) {
+// findParentGoMod walks up from start looking for a directory that contains
+// a go.mod file. Returns the directory path or "" if none found before the
+// filesystem root.
+func findParentGoMod(start string) string {
+	dir := start
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// writeTempProject writes Go source + (optionally) a go.mod to a temp
+// directory and returns the path.
+//
+// If sourcePath is non-empty and lives inside a Go module, the temp project
+// is staged as `<module-root>/.ferrous-wheel-build/fwrun-*/main.go`. No
+// go.mod is written — Go's module discovery walks up and inherits the
+// parent module's go.mod, including all of its dependencies and replace
+// directives. This lets .fw scripts use any third-party package that the
+// host project already depends on.
+//
+// If sourcePath is empty or no parent go.mod is found, falls back to
+// writing a self-contained temp project under /tmp with a fresh
+// `module fwrun` go.mod (stdlib-only).
+//
+// Go's `./...` walker skips dot-prefixed directories, so the staging
+// directory does not pollute project-wide builds.
+func writeTempProject(goCode, sourcePath string) (string, func(), error) {
+	if sourcePath != "" {
+		if absSource, err := filepath.Abs(sourcePath); err == nil {
+			if parentMod := findParentGoMod(filepath.Dir(absSource)); parentMod != "" {
+				stageRoot := filepath.Join(parentMod, ".ferrous-wheel-build")
+				if mkErr := os.MkdirAll(stageRoot, 0755); mkErr != nil {
+					return "", nil, fmt.Errorf("create stage root: %w", mkErr)
+				}
+				tmpDir, err := os.MkdirTemp(stageRoot, "fwrun-*")
+				if err != nil {
+					return "", nil, fmt.Errorf("create temp dir: %w", err)
+				}
+				cleanup := func() { os.RemoveAll(tmpDir) }
+				if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(goCode), 0644); err != nil {
+					cleanup()
+					return "", nil, fmt.Errorf("write main.go: %w", err)
+				}
+				return tmpDir, cleanup, nil
+			}
+		}
+	}
+
 	tmpDir, err := os.MkdirTemp("", "ferrous-wheel-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create temp dir: %w", err)
@@ -189,7 +242,7 @@ func run(path string) error {
 	}
 	printWarnings(os.Stderr, warnings)
 
-	tmpDir, cleanup, err := writeTempProject(goCode)
+	tmpDir, cleanup, err := writeTempProject(goCode, path)
 	if err != nil {
 		return err
 	}
@@ -215,7 +268,7 @@ func build(path, output string) error {
 	}
 	printWarnings(os.Stderr, warnings)
 
-	tmpDir, cleanup, err := writeTempProject(goCode)
+	tmpDir, cleanup, err := writeTempProject(goCode, path)
 	if err != nil {
 		return err
 	}

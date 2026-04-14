@@ -88,7 +88,10 @@ func main() {
 }
 
 func TestWriteTempProjectCreatesGoModuleAndMain(t *testing.T) {
-	tmpDir, cleanup, err := writeTempProject(generatedHeader + "package main\n\nfunc main() {}\n")
+	// Pass an empty sourcePath so writeTempProject falls into the legacy
+	// /tmp branch (with a fresh fwrun go.mod). The new project-inheritance
+	// branch is exercised by TestWriteTempProjectInheritsParentGoMod.
+	tmpDir, cleanup, err := writeTempProject(generatedHeader+"package main\n\nfunc main() {}\n", "")
 	if err != nil {
 		t.Fatalf("writeTempProject: %v", err)
 	}
@@ -105,6 +108,46 @@ func TestWriteTempProjectCreatesGoModuleAndMain(t *testing.T) {
 
 	if !strings.Contains(string(goMod), "module fwrun") {
 		t.Fatalf("expected temp module, got:\n%s", goMod)
+	}
+	if !strings.Contains(string(mainGo), "func main() {}") {
+		t.Fatalf("expected main.go contents, got:\n%s", mainGo)
+	}
+}
+
+// TestWriteTempProjectInheritsParentGoMod verifies that when the .fw source
+// lives inside a Go module, the temp project is staged under
+// `<module>/.ferrous-wheel-build/fwrun-*/` and does NOT write a fresh
+// go.mod. This is what lets .fw scripts depend on third-party packages that
+// are already in the host project's go.mod.
+func TestWriteTempProjectInheritsParentGoMod(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parent, "go.mod"), []byte("module example.com/host\n\ngo 1.24.0\n"), 0644); err != nil {
+		t.Fatalf("seed parent go.mod: %v", err)
+	}
+	scriptDir := filepath.Join(parent, "scripts")
+	if err := os.MkdirAll(scriptDir, 0755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	scriptPath := filepath.Join(scriptDir, "demo.fw")
+	if err := os.WriteFile(scriptPath, []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("seed script: %v", err)
+	}
+
+	tmpDir, cleanup, err := writeTempProject(generatedHeader+"package main\n\nfunc main() {}\n", scriptPath)
+	if err != nil {
+		t.Fatalf("writeTempProject: %v", err)
+	}
+	defer cleanup()
+
+	if !strings.HasPrefix(tmpDir, filepath.Join(parent, ".ferrous-wheel-build")) {
+		t.Fatalf("expected staged dir under parent's .ferrous-wheel-build/, got: %s", tmpDir)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "go.mod")); !os.IsNotExist(err) {
+		t.Fatalf("expected NO go.mod in inherited staging dir, stat=%v", err)
+	}
+	mainGo, err := os.ReadFile(filepath.Join(tmpDir, "main.go"))
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
 	}
 	if !strings.Contains(string(mainGo), "func main() {}") {
 		t.Fatalf("expected main.go contents, got:\n%s", mainGo)
