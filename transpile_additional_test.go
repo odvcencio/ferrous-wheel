@@ -12,10 +12,8 @@ import (
 // nil to collector.text() dereferenced a nil node inside
 // gotreesitter.(*Node).StartByte() and SIGSEGV'd the whole CLI on any
 // .fw file with a top-level `const x = 42` or `var y = "hi"`.
-//
-// Bug discovered while writing scripts/og-gen.fw in the example.dev
-// repo. Trivial to reproduce; previously took ferrous-wheel down for
-// any non-trivial real-world script.
+// Trivial to reproduce; previously took ferrous-wheel down for any
+// non-trivial real-world script.
 func TestTranspileUntypedTopLevelConstNoCrash(t *testing.T) {
 	cases := []struct {
 		name   string
