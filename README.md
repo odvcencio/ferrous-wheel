@@ -4,6 +4,10 @@ Rust-inspired syntax sugar, low-level memory primitives, and concurrency pattern
 
 Built on [gotreesitter](https://github.com/odvcencio/gotreesitter)'s `grammargen` — a pure-Go grammar generator with production-grade Go grammar support (100% parity with tree-sitter's C implementation). Original idea inspired by [dingo](https://github.com/MadAppGang/dingo).
 
+## Agent Skill
+
+Agents working with Ferrous Wheel should use the [using-ferrous-wheel](https://github.com/odvcencio/m31labs-skills/blob/main/skills/using-ferrous-wheel/SKILL.md) skill.
+
 ## Quick taste
 
 ```fw
