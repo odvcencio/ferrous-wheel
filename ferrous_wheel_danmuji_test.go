@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	ferrouswheel "github.com/odvcencio/ferrous-wheel"
+	ferrouswheel "m31labs.dev/ferrous-wheel"
 	"github.com/stretchr/testify/assert"
 
 	// =============================================================================

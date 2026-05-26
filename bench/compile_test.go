@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	ferrouswheel "github.com/odvcencio/ferrous-wheel"
+	ferrouswheel "m31labs.dev/ferrous-wheel"
 )
 
 func BenchmarkTranspileFibonacci(b *testing.B) {

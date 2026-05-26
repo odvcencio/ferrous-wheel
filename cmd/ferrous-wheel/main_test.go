@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	ferrouswheel "github.com/odvcencio/ferrous-wheel"
+	ferrouswheel "m31labs.dev/ferrous-wheel"
 )
 
 func writeFWFile(t *testing.T, dir, name, source string) string {

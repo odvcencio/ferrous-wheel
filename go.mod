@@ -1,4 +1,4 @@
-module github.com/odvcencio/ferrous-wheel
+module m31labs.dev/ferrous-wheel
 
 go 1.25.0
 

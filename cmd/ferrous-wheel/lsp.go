@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	ferrouswheel "github.com/odvcencio/ferrous-wheel"
+	ferrouswheel "m31labs.dev/ferrous-wheel"
 	gotreesitter "github.com/odvcencio/gotreesitter"
 )
 

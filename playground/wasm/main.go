@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"syscall/js"
 
-	ferrouswheel "github.com/odvcencio/ferrous-wheel"
+	ferrouswheel "m31labs.dev/ferrous-wheel"
 )
 
 type transpileResult struct {
