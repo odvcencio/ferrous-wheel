@@ -233,6 +233,33 @@ func Grammar() *GrammarType {
 			Field("end", Sym("_expression")),
 		)))
 
+		// --- float_literal override: forbid the bare "digits." form ---
+		//
+		// Go's grammar allows a float literal to end right after the decimal
+		// point with nothing else following (e.g. `1.` is a valid Go
+		// float64 literal). That collides with the range operator above:
+		// the lexer uses longest-match-wins, so `0..10` tokenizes as
+		// float_literal("0.") + "."(selector) + int_literal("10") instead
+		// of int_literal("0") + range_op("..") + int_literal("10"), because
+		// "0." (2 bytes) is a longer match than bare "0" (1 byte) and wins
+		// before the parser ever gets a chance to prefer the range
+		// operator. This lexer is greedy/local (no external-scanner
+		// lookahead across the second "."), so the ambiguity can't be
+		// resolved by grammar/parser precedence alone.
+		//
+		// Real-world precedent: Rust and Kotlin's grammars both require at
+		// least one fraction digit or an explicit exponent for a
+		// trailing-dot float to be lexically valid, specifically to avoid
+		// this exact clash with range syntax. We adopt the same rule: FW
+		// floats may still end in "." followed by an exponent (`1.e10`) or
+		// have fraction digits (`1.5`), but a lone trailing dot with
+		// nothing after it no longer lexes as a float — so `0..10` and
+		// `for i in 0..10` parse without a space. This is the only piece
+		// of Go float syntax ferrous-wheel gives up; see README.
+		if fixed, ok := restrictBareTrailingDotFloat(g.Rules["float_literal"]); ok {
+			g.Define("float_literal", fixed)
+		}
+
 		// --- for in statement (single variable) ---
 		// for v in iterable { body }
 		g.Define("for_in_statement", Seq(
@@ -770,6 +797,90 @@ func Grammar() *GrammarType {
 		// select_arm body is an expression — conflicts with other expression rules
 		AddConflict(g, "select_arm", "_expression")
 
+		// --- extras: narrow whitespace to what real Go accepts ---
+		//
+		// The base Go grammar's extras use `\s`, which this engine's regex
+		// dialect expands to `[\t\n\r \f\v]` (form feed and vertical tab
+		// included, not just the real Go whitespace set). Since ferrous-
+		// wheel's transpiler frequently echoes source spans verbatim into
+		// the generated Go (e.g. package_clause has no dedicated emitter —
+		// see validateTopLevelDeclarationsOnly), any character we treat as
+		// insignificant "extra" filler can end up copied byte-for-byte into
+		// output that real Go's scanner then rejects: `package<VT>foo`
+		// parses fine here (VT skipped as an extra) but is `ILLEGAL` to
+		// go/parser, since Go only treats space/tab/CR/NL as whitespace
+		// (form feed and vertical tab are ordinary — invalid — characters
+		// in Go source outside of string/rune literals and comments).
+		// Restricting extras to Go's actual whitespace set closes that gap.
+		g.SetExtras(
+			Sym("comment"),
+			Pat(`[ \t\r\n]`),
+		)
+
 		g.EnableLRSplitting = true
 	})
+}
+
+// restrictBareTrailingDotFloat rewrites the decimal branch of Go's
+// float_literal rule so that "digits '.'" with neither fraction digits nor
+// an exponent is no longer an accepting token. See the comment above its
+// call site in Grammar() for why: it's what lets `0..10` lex as
+// int_literal + range_op + int_literal instead of float_literal + "." +
+// int_literal.
+//
+// It expects the exact shape produced by go_grammar.go's float_literal
+// definition:
+//
+//	Token(Choice(
+//	    Choice(altA, altB, altC),  // decimal forms
+//	    hexFloat,                  // hex float form
+//	))
+//	altA = Seq(intDigits, Str("."), Choice(fractionDigits, Blank()), Choice(exponent, Blank()))
+//
+// If the shape doesn't match (e.g. the base grammar changes upstream), it
+// returns ok=false and the caller leaves the original rule untouched
+// rather than risk emitting a malformed grammar.
+func restrictBareTrailingDotFloat(floatRule *Rule) (*Rule, bool) {
+	if floatRule == nil || floatRule.Kind != RuleToken || len(floatRule.Children) != 1 {
+		return nil, false
+	}
+	outer := floatRule.Children[0]
+	if outer.Kind != RuleChoice || len(outer.Children) != 2 {
+		return nil, false
+	}
+	decimalChoice := outer.Children[0]
+	hexFloat := outer.Children[1]
+	if decimalChoice.Kind != RuleChoice || len(decimalChoice.Children) != 3 {
+		return nil, false
+	}
+	altA, altB, altC := decimalChoice.Children[0], decimalChoice.Children[1], decimalChoice.Children[2]
+	if altA.Kind != RuleSeq || len(altA.Children) != 4 {
+		return nil, false
+	}
+	intPart, dotLit := altA.Children[0], altA.Children[1]
+	fractionChoice, exponentChoice := altA.Children[2], altA.Children[3]
+	if fractionChoice.Kind != RuleChoice || len(fractionChoice.Children) != 2 {
+		return nil, false
+	}
+	if exponentChoice.Kind != RuleChoice || len(exponentChoice.Children) != 2 {
+		return nil, false
+	}
+	fractionDigits := fractionChoice.Children[0]
+	exponentSeq := exponentChoice.Children[0]
+
+	// Was: Choice(fractionDigits, Blank()) followed by Choice(exponentSeq, Blank())
+	// — independently optional, so both can be blank at once (the bare
+	// "digits." case). Now: either fraction digits are present (exponent
+	// stays optional), or fraction digits are absent and the exponent is
+	// required.
+	newAltA := Seq(
+		intPart,
+		dotLit,
+		Choice(
+			Seq(fractionDigits, exponentChoice),
+			Seq(Blank(), exponentSeq),
+		),
+	)
+
+	return Token(Choice(Choice(newAltA, altB, altC), hexFloat)), true
 }
