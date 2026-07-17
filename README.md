@@ -62,7 +62,7 @@ ferrous-wheel lint  myfile.fw                      # run lint rules
 ferrous-wheel lsp                                  # start language server
 ```
 
-`emit` writes standard Go source to stdout with a generated-file header. `build` accepts `-o` for the output path. `fmt` formats `.fw` source files (tabs, operator spacing, match arm alignment). `lint` runs 10 built-in rules and reports diagnostics — errors block transpilation, warnings don't.
+`emit` writes standard Go source to stdout with a generated-file header. `build` accepts `-o` for the output path. `fmt` formats `.fw` source files (tabs, operator spacing, match arm alignment). `lint` runs 19 built-in rules and reports diagnostics — errors block transpilation, warnings don't.
 
 ---
 
@@ -552,6 +552,61 @@ breaker "payment-gateway" {
 
 ---
 
+## Logging and color
+
+### Level-based log statements
+
+```fw
+info "server started", port: 8080
+warn "slow query", duration_ms: 420, query: q
+error "request failed", err
+fatal "cannot bind port"           // logs then os.Exit(1)
+```
+
+Levels (`trace`, `debug`, `info`, `warn`, `error`, `fatal`) transpile to a `log/slog` backend with a pretty-printing console handler. Attributes are `key: value` pairs or bare identifiers (shorthand for `name: name`).
+
+### `with` — scoped logger attributes
+
+```fw
+with request_id: reqID, user: userID {
+    info "handling request"
+    doWork()
+    info "request complete"
+}
+```
+
+Every log call inside the block automatically includes the `with` attributes.
+
+### `time` — duration-tracked blocks
+
+```fw
+time "database query" {
+    rows := db.Query(sql)
+}
+// Logs elapsed duration on exit, with a tree-drawing prefix for nested time blocks.
+```
+
+### `log.config!` — top-level directive
+
+```fw
+log.config!(level: .info)
+```
+
+Sets the minimum log level for the whole file. Must appear at package scope. `log.config!` also accepts `time:` and `format:` keys syntactically, but they're not wired to any behavior yet — `level:` is the only option that currently has an effect.
+
+### `color.*` — styled output helpers
+
+```fw
+fmt.Println(color.bold(color.red("FAILED")))
+fmt.Println(color.green("ok"))
+```
+
+Available styles: `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, `bold`, `dim`, `italic`, `underline`.
+
+> **Gotcha:** unlike the `with`/`time`/`info`/`warn`/etc. logging keywords (which are deliberately lexed as plain identifiers with the keyword text validated at transpile time — see `grammar.go`'s `log_with_block`/`log_time_block` comments), `color.*` is matched by a grammar rule that lexes `color` as a literal keyword token. That makes `color` a de facto reserved word: using it as *any* identifier — a variable (`color := "red"`), a function name (`func color() ...`), even just reading one (`fmt.Println(color)`) — currently fails to parse, not just calling `color.foo(...)`. There's no workaround short of renaming; this is a known, unfixed inconsistency in the logging/color DSL grammar (tracked for a follow-up that would apply the same identifier + runtime-validation pattern `with`/`time` already use).
+
+---
+
 ## Real-world examples
 
 ### Concurrent web scraper
@@ -657,7 +712,7 @@ func processCSV(path string) []Record {
 - `match` is exhaustive at runtime — unmatched values panic.
 - `?.` uses direct field access when the object type is resolved; falls back to reflection only for unresolved types.
 - Built-in `Result` and `Option` helpers are injected only when actually used.
-- 10 built-in lint rules run automatically before transpilation. Errors block, warnings report.
+- 19 built-in lint rules run automatically before transpilation. Errors block, warnings report.
 - Concurrency primitives compile to Go patterns (`sync.WaitGroup`, `select`, channels).
 - `arena` generates bump-allocation helpers; `mmap` validates `[]byte` targets.
 - Ferrous Wheel feature keywords are parsed contextually inside `.fw` files.
