@@ -1,7 +1,6 @@
 package ferrouswheel
 
 import (
-	"bytes"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -392,35 +391,182 @@ func validateMemoryUsage(root *gotreesitter.Node, lang *gotreesitter.Language, s
 	return walk(root)
 }
 
-func validateNoUnparsedText(root *gotreesitter.Node, src []byte) error {
+// gapCheckOpaqueNodeTypes are node types whose grammar rule (see
+// grammar.go) includes a *hidden* rule (leading "_") that wraps a Token():
+// by tree-sitter convention, hidden rules don't produce a visible child
+// node, so wrapping a multi-char literal in one means that literal's
+// matched text isn't represented as a child at all. When the hidden token
+// sits BETWEEN two of the node's visible children (an infix operator), the
+// gap between those children is that operator's own text: real source, not
+// garbage. Checking gaps between this node's own direct children is
+// therefore unsafe, so we skip it entirely for these types (but still
+// recurse into their children to catch garbage nested further down, e.g.
+// inside a pipeline's left/right operand).
+//
+// This list is exhaustive as of grammar.go's current hidden multi-char
+// token rules used as a MIDDLE Seq element — every `g.Define("_fw_..."` /
+// `g.Define("_pipe_op"` (i.e. every Sym() reference to a hidden rule
+// wrapping a Token()) and the node type that embeds it:
+//
+//	_fw_null_coalesce_op -> null_coalesce      (left ?? right)
+//	_fw_arrow_op          -> lambda_expression (params -> body)
+//	_fw_range_op          -> range_expression  (start..end)
+//	_pipe_op              -> pipeline_expression (left |> right)
+//
+// defer_error (_fw_defer_bang) is handled separately below — it's a
+// LEADING hidden token, not a middle one, which breaks a different
+// assumption (see gapCheckHiddenPrefixChildTypes).
+//
+// A newly added hidden multi-char token rule needs the same treatment here
+// — there's no way to detect this class of rule generically from the CST
+// alone, since by definition it leaves no trace of itself to detect.
+var gapCheckOpaqueNodeTypes = map[string]bool{
+	"null_coalesce":       true,
+	"lambda_expression":   true,
+	"range_expression":    true,
+	"pipeline_expression": true,
+}
+
+// gapCheckHiddenPrefixChildTypes are node types whose grammar rule is a
+// Seq() starting with a hidden rule wrapping a Token() (defer_error's
+// "defer!" via _fw_defer_bang is the only one — see grammar.go). Unlike
+// the middle-token case above, this doesn't just make the node's own
+// children ungappable: gotreesitter reports the WHOLE node's StartByte as
+// beginning after the invisible prefix, which shifts where THIS node
+// starts relative to its PRECEDING SIBLING in whatever parent embeds it
+// (e.g. the statement before a `defer! f.Close()` in a statement_list).
+// So the gap immediately before a child of one of these types, in any
+// parent, is skipped — not just gaps within the node's own children.
+var gapCheckHiddenPrefixChildTypes = map[string]bool{
+	"defer_error": true,
+}
+
+// gapCheckSkipSubtreeNodeTypes are node types where not just the node
+// itself but its ENTIRE subtree is unsafe to gap-check. impl_block methods
+// (`impl T { func Name() Ret { ... } }`) parse each method through the
+// *anonymous* func_literal rule (no name field — that's a real Go grammar
+// rule for `func(...) {...}` literals, not a name-bearing declaration), so
+// the method name identifier (e.g. "Area" in "func Area() int") is
+// completely unrepresented in the CST at all, not merely omitted from one
+// specific node's span the way the hidden-token operators above are. The
+// emitter recovers the name a different way (raw source scanning), but
+// that means a func_literal-shaped "gap" exists for every single method in
+// every impl block, so we don't walk into impl_block subtrees at all here.
+var gapCheckSkipSubtreeNodeTypes = map[string]bool{
+	"impl_block": true,
+}
+
+func validateNoUnparsedText(root *gotreesitter.Node, lang *gotreesitter.Language, src []byte, sourceFile string) error {
 	if root == nil {
 		return nil
 	}
+	var walk func(n *gotreesitter.Node) error
+	walk = func(n *gotreesitter.Node) error {
+		if n == nil || n.ChildCount() == 0 {
+			// Leaf/terminal nodes (keywords, identifiers, literals, ...)
+			// have no children by definition — their own matched text
+			// *is* their content, not something children need to
+			// "cover". Checking them would always report their whole
+			// span as an "uncovered gap".
+			return nil
+		}
+		nodeType := ""
+		if lang != nil {
+			nodeType = n.Type(lang)
+		}
+		if gapCheckSkipSubtreeNodeTypes[nodeType] {
+			return nil
+		}
+		if !gapCheckOpaqueNodeTypes[nodeType] {
+			if err := checkGapBetweenChildren(n, lang, n.StartByte(), n.EndByte(), src, sourceFile); err != nil {
+				return err
+			}
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			if err := walk(n.Child(i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(root)
+}
 
-	// gotreesitter can omit some inner tokens from custom DSL nodes (for example
-	// `impl` method names and `defer!` prefixes), so only validate uncovered text
-	// between top-level siblings where recovery garbage like `package mx n` appears.
-	prev := uint32(0)
-	for i := 0; i < root.ChildCount(); i++ {
-		child := root.Child(i)
+// checkGapBetweenChildren validates that n's direct children fully cover
+// n's [start, end) byte span (aside from whitespace/comment extras),
+// returning a diagnostic for the first non-whitespace gap found. The gap
+// immediately preceding a child whose type is in
+// gapCheckHiddenPrefixChildTypes is skipped (see its doc comment) — the
+// child's END is still used to keep tracking subsequent gaps accurately.
+// Callers must not use this on a node type in gapCheckOpaqueNodeTypes —
+// see its doc comment for why.
+func checkGapBetweenChildren(n *gotreesitter.Node, lang *gotreesitter.Language, start, end uint32, src []byte, sourceFile string) error {
+	prev := start
+	for i := 0; i < n.ChildCount(); i++ {
+		child := n.Child(i)
 		if child == nil || child.EndByte() <= child.StartByte() {
 			continue
 		}
-		if child.StartByte() > prev {
-			if len(bytes.TrimSpace(src[prev:child.StartByte()])) > 0 {
-				return fmt.Errorf("parse errors in ferrous-wheel source")
+		if child.StartByte() > prev && !spineStartsWithHiddenPrefix(child, lang) {
+			gap := src[prev:child.StartByte()]
+			if !isFWWhitespaceOnly(gap) {
+				return newUnparsedTextError(src, sourceFile, prev, gap)
 			}
 		}
 		if child.EndByte() > prev {
 			prev = child.EndByte()
 		}
 	}
-	if uint32(len(src)) > prev {
-		if len(bytes.TrimSpace(src[prev:])) > 0 {
-			return fmt.Errorf("parse errors in ferrous-wheel source")
+	if end > prev {
+		gap := src[prev:end]
+		if !isFWWhitespaceOnly(gap) {
+			return newUnparsedTextError(src, sourceFile, prev, gap)
 		}
 	}
 	return nil
+}
+
+// spineStartsWithHiddenPrefix reports whether n's reported StartByte is
+// potentially shifted late because n, or its first child, or its first
+// child's first child, and so on down the leftmost spine, is a node type
+// in gapCheckHiddenPrefixChildTypes. A hidden-prefix node's shifted start
+// propagates to every ancestor whose leftmost-descendant chain passes
+// through it (their own StartByte is derived from their first child's),
+// so checking only the immediate child (as opposed to walking the spine)
+// isn't enough — see e.g. `defer! f.Close()` as the sole statement in a
+// block: block -> statement_list -> defer_error is a 3-deep leftmost spine,
+// and block's gap check needs to know about the defer_error at its bottom.
+func spineStartsWithHiddenPrefix(n *gotreesitter.Node, lang *gotreesitter.Language) bool {
+	for n != nil {
+		if lang != nil && gapCheckHiddenPrefixChildTypes[n.Type(lang)] {
+			return true
+		}
+		if n.ChildCount() == 0 {
+			return false
+		}
+		n = n.Child(0)
+	}
+	return false
+}
+
+// isFWWhitespaceOnly reports whether b consists entirely of bytes the
+// ferrous-wheel grammar treats as insignificant extras (space, tab, CR, LF
+// — see grammar.go's SetExtras override). Deliberately narrower than
+// bytes.TrimSpace/unicode.IsSpace, which also treat form feed, vertical
+// tab, and other Unicode space separators as whitespace: those are *not*
+// FW extras (so the lexer doesn't silently skip them either), but using
+// the wider definition here let such bytes slip through this gap check as
+// "just formatting" and get echoed verbatim into generated Go, which
+// go/parser then rejects as illegal characters.
+func isFWWhitespaceOnly(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Transpile converts .fw source to valid Go code.
@@ -445,6 +591,25 @@ func Transpile(source []byte) (string, error) {
 
 // TranspileWithOptions converts .fw source to valid Go code with configurable options.
 func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warning, error) {
+	errSourceLabel := opts.SourceFile
+	if errSourceLabel != "" {
+		errSourceLabel = filepath.Base(errSourceLabel)
+	}
+
+	// Defense in depth for the whole "grammar accepts a control byte as
+	// whitespace/a terminator that real Go's scanner rejects outright"
+	// bug class (see grammar.go's narrowed SetExtras override and
+	// checkBlockGarbage above for two specific instances of it: vertical
+	// tab and NUL respectively). Rather than continuing to special-case
+	// every individual control byte some grammar production happens to
+	// tolerate, reject them all upfront: none of \x00-\x08, \x0B, \x0C,
+	// \x0E-\x1F, or \x7F are legal outside Go string/rune literals (and
+	// NUL specifically is disallowed by the Go spec even inside them), so
+	// there's no legitimate .fw source that needs one.
+	if err := validateNoIllegalControlBytes(source, errSourceLabel); err != nil {
+		return "", nil, err
+	}
+
 	lang, err := getFWLanguage()
 	if err != nil {
 		return "", nil, fmt.Errorf("generate ferrous-wheel language: %w", err)
@@ -458,7 +623,25 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 
 	root := tree.RootNode()
 	if root.HasError() {
-		return "", nil, fmt.Errorf("parse errors in ferrous-wheel source")
+		return "", nil, newParseErrorsError(root, lang, source, errSourceLabel)
+	}
+	if err := validatePackageClausePresent(root, lang, source, errSourceLabel); err != nil {
+		return "", nil, err
+	}
+	if err := validateTopLevelDeclarationsOnly(root, lang, source, errSourceLabel); err != nil {
+		return "", nil, err
+	}
+	if err := validateNoReservedWordIdentifiers(root, lang, source, errSourceLabel); err != nil {
+		return "", nil, err
+	}
+	if err := validateNoSelectorOnIntLiteral(root, lang, source, errSourceLabel); err != nil {
+		return "", nil, err
+	}
+	if err := validateNoMultilineInterpretedStrings(root, lang, source, errSourceLabel); err != nil {
+		return "", nil, err
+	}
+	if err := validateNoBareCommaParameterList(root, lang, source, errSourceLabel); err != nil {
+		return "", nil, err
 	}
 
 	var env *TypeEnv
@@ -466,7 +649,7 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 		_ = collected.LoadCollectedImports(findModuleDir(opts.SourceFile))
 		env = collected
 	}
-	if err := validateNoUnparsedText(root, source); err != nil {
+	if err := validateNoUnparsedText(root, lang, source, errSourceLabel); err != nil {
 		return "", nil, err
 	}
 	if err := validateTopLevelOnly(root, lang, source, env); err != nil {
@@ -479,10 +662,7 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 		return "", nil, err
 	}
 
-	sourceLabel := opts.SourceFile
-	if sourceLabel != "" {
-		sourceLabel = filepath.Base(sourceLabel)
-	}
+	sourceLabel := errSourceLabel
 	var inferCtx *InferenceContext
 	if env != nil {
 		inferCtx = NewInferenceContext()
@@ -2267,13 +2447,29 @@ func (t *fwTranspiler) emitIfLet(n *gotreesitter.Node) string {
 }
 
 // 0..10 -> (kept as-is; used by for_in to generate range loop)
+// emitRange handles a range_expression (`0..10`) reached directly through
+// the generic emit() dispatch — i.e. NOT as the immediate iterable of a
+// for-in loop or list comprehension, both of which special-case
+// range_expression themselves (see emitForIn, emitForInIndex,
+// emitListComprehension) and desugar it into a real counting loop before
+// ever calling emitRange. A range has no meaning as a standalone Go value
+// (Go has no range type/literal you can drop into an arbitrary expression
+// position — e.g. `arr[0..10]` or `x := 0..10` aren't valid Go), so
+// reaching this function means the range wasn't consumed by one of those
+// loop-shaped constructs. Previously this silently emitted
+// `/* range a..b */` as a comment, which produces generated Go that
+// doesn't parse wherever a real expression was required (e.g. inside an
+// index_expression's brackets). Fail with a clear diagnostic instead.
 func (t *fwTranspiler) emitRange(n *gotreesitter.Node) string {
 	start := t.childByField(n, "start")
 	end := t.childByField(n, "end")
 	if start == nil || end == nil {
 		return t.text(n)
 	}
-	// Range expression is primarily consumed by for_in; if standalone, emit as comment
+	pos := n.StartPoint()
+	t.transpileErrors = append(t.transpileErrors, fmt.Errorf(
+		"line %d:%d: range expression %q is only valid as the iterable of a `for ... in` loop or list comprehension, not as a standalone value",
+		pos.Row+1, pos.Column+1, t.text(n)))
 	return fmt.Sprintf("/* range %s..%s */", t.emit(start), t.emit(end))
 }
 
@@ -2297,14 +2493,35 @@ func (t *fwTranspiler) emitForIn(n *gotreesitter.Node) string {
 		end := t.childByField(iterable, "end")
 		if start != nil && end != nil {
 			if block != "" {
+				// A C-style counting loop needs to read and increment its
+				// induction variable ("i < end", "i++"), which Go's blank
+				// identifier can't do (`_` is write-only) — unlike a
+				// range-for's `for _, v := range x`, where `_` is fine.
+				// `for _ in 0..3` is a reasonable way to write "repeat 3
+				// times, I don't care about the value", so substitute a
+				// synthetic counter name rather than reject it; nothing in
+				// the body can reference "_" as this loop's value anyway.
+				loopVar := loopCounterVarName(varName)
 				return fmt.Sprintf("for %s := %s; %s < %s; %s++ %s",
-					varName, t.emit(start), varName, t.emit(end), varName, block)
+					loopVar, t.emit(start), loopVar, t.emit(end), loopVar, block)
 			}
 		}
 	}
 
 	// General iterable: for _, v := range iterable { body }
 	return fmt.Sprintf("for _, %s := range %s %s", varName, t.emit(iterable), block)
+}
+
+// loopCounterVarName returns a name safe to use as a C-style for loop's
+// induction variable (declared, compared, and incremented — i.e. read, not
+// just assigned). Go's blank identifier `_` can be assigned but never read,
+// so `for _ := 0; _ < n; _++` doesn't compile; substitute a synthetic name
+// when the source's loop variable is "_".
+func loopCounterVarName(varName string) string {
+	if varName == "_" {
+		return "_fwLoopIdx"
+	}
+	return varName
 }
 
 // for i, v in iterable { body }
@@ -2493,10 +2710,32 @@ func (t *fwTranspiler) emitListComprehension(n *gotreesitter.Node) string {
 		return t.text(n)
 	}
 
+	// Range iterables (0..10) desugar to a C-style counting loop, same as
+	// emitForIn does for `for i in 0..10`. They never resolve to a
+	// SliceType, so handle them before the general typed-slice path below.
+	isRange := t.nodeType(iterable) == "range_expression"
+
 	// Typed path: resolve iterable element type and expression type
 	elemTypeStr := "interface{}"
 	var elemType Type
-	if t.typeEnv != nil {
+	if isRange {
+		elemType = t.rangeValueType(iterable)
+		if elemType != nil {
+			t.typeEnv.PushScope()
+			t.typeEnv.RegisterVar(t.text(varNode), elemType)
+			exprType, exprErr := t.typeEnv.Resolve(expr, t.lang, t.src)
+			t.typeEnv.PopScope()
+			if exprErr == nil {
+				if t.inferCtx != nil {
+					exprType = t.inferCtx.Apply(exprType)
+				}
+				exprType = t.normalizeBindingType(exprType)
+				if exprType != nil {
+					elemTypeStr = exprType.String()
+				}
+			}
+		}
+	} else if t.typeEnv != nil {
 		iterType, err := t.typeEnv.Resolve(iterable, t.lang, t.src)
 		if err == nil {
 			// Apply inference context substitutions to resolve TypeVars
@@ -2545,10 +2784,32 @@ func (t *fwTranspiler) emitListComprehension(n *gotreesitter.Node) string {
 		}
 		exprText = t.emit(expr)
 	}
+	// NOTE: don't compute a default "range %s" loopHeader up front and
+	// conditionally overwrite it for the range_expression case — t.emit on
+	// a range_expression (emitRange) records a transpileError as a side
+	// effect when the range isn't consumed by its caller (see emitRange's
+	// doc comment), so calling it here "just in case" would wrongly flag
+	// every range-based comprehension even though the result is discarded.
+	var loopHeader string
+	if isRange {
+		start := t.childByField(iterable, "start")
+		end := t.childByField(iterable, "end")
+		if start != nil && end != nil {
+			// See loopCounterVarName's doc comment: "_" can't be the
+			// induction variable of a C-style counting loop.
+			loopVar := loopCounterVarName(varName)
+			loopHeader = fmt.Sprintf("for %s := %s; %s < %s; %s++ {",
+				loopVar, t.emit(start), loopVar, t.emit(end), loopVar)
+		}
+	}
+	if loopHeader == "" {
+		loopHeader = fmt.Sprintf("for _, %s := range %s {", varName, t.emit(iterable))
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "func() []%s {\n", elemTypeStr)
 	fmt.Fprintf(&b, "\tvar _result []%s\n", elemTypeStr)
-	fmt.Fprintf(&b, "\tfor _, %s := range %s {\n", varName, t.emit(iterable))
+	fmt.Fprintf(&b, "\t%s\n", loopHeader)
 	if filter != nil {
 		fmt.Fprintf(&b, "\t\tif %s {\n", filterText)
 		fmt.Fprintf(&b, "\t\t\t_result = append(_result, %s)\n", exprText)
