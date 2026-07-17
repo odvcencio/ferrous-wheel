@@ -1,6 +1,7 @@
 package ferrouswheel
 
 import (
+	"fmt"
 	"sort"
 
 	gotreesitter "github.com/odvcencio/gotreesitter"
@@ -85,6 +86,7 @@ func init() {
 		&withSingleLogRule{},
 		&nestedTimeSameNameRule{},
 		&logInHotLoopRule{},
+		&letSwallowRule{},
 	}
 	scopeRules = []ScopeLintRule{
 		&unusedLetRule{},
@@ -1411,6 +1413,83 @@ func (r *logInHotLoopRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintD
 				Message:  "log call inside loop may produce excessive output",
 				Severity: r.Severity(),
 			}}
+		}
+	}
+	return nil
+}
+
+// ---------- let-swallow rule ----------
+//
+// `let x =` (or `let (a, b) =`) followed immediately by a newline has no
+// dedicated "end of initializer" marker in the grammar: the parser keeps
+// consuming `_expression` grammar across the newline (newlines are
+// insignificant whitespace, same as in real Go), so whatever follows —
+// even an entire, unrelated statement like `fmt.Println(x)` — gets
+// silently absorbed into the binding's initializer instead of becoming its
+// own statement. This produces code that transpiles and often even
+// compiles, but silently does something other than what was written (see
+// the `broken1.fw` fixture and CHANGELOG for a worked example).
+//
+// Heuristic: if the initializer expression's first line differs from the
+// line the `=` token is on, flag it. This is deliberately blunt (a
+// legitimate `let x =\n    value` continuation also trips it) because a
+// merged statement is a correctness bug, not a style nit — see the rule's
+// message for how to resolve either case.
+type letSwallowRule struct{}
+
+func (r *letSwallowRule) Name() string { return "let-swallow" }
+func (r *letSwallowRule) Description() string {
+	return "let initializer starts on a different line than '='; may have silently absorbed the following statement"
+}
+func (r *letSwallowRule) Severity() LintSeverity { return LintError }
+
+func (r *letSwallowRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintDiagnostic {
+	nodeType := n.Type(ctx.Lang)
+	if nodeType != "let_declaration" && nodeType != "let_multi_declaration" {
+		return nil
+	}
+	value := n.ChildByFieldName("value", ctx.Lang)
+	if value == nil {
+		return nil
+	}
+	eq := letSwallowFindEquals(n, ctx.Lang)
+	if eq == nil {
+		return nil
+	}
+	eqRow := eq.StartPoint().Row
+	valRow := value.StartPoint().Row
+	if valRow == eqRow {
+		return nil
+	}
+	pt := value.StartPoint()
+	return []LintDiagnostic{{
+		Rule: r.Name(),
+		Line: int(pt.Row) + 1,
+		Col:  int(pt.Column) + 1,
+		Message: fmt.Sprintf(
+			"initializer starts on line %d but '=' is on line %d; if code after this "+
+				"point was meant to be a separate statement, it has been silently merged "+
+				"into this binding's value — put the initializer on the same line as '=', "+
+				"or if a multi-line expression is intended, verify nothing after it was swallowed",
+			valRow+1, eqRow+1,
+		),
+		Severity: r.Severity(),
+	}}
+}
+
+// letSwallowFindEquals returns the unnamed "=" token child of a
+// let_declaration/let_multi_declaration node. The grammar doesn't field-tag
+// it (only "name"/"type_annotation"/"value"/"mutable" are fields), so it's
+// located by scanning direct children for the literal token.
+func letSwallowFindEquals(n *gotreesitter.Node, lang *gotreesitter.Language) *gotreesitter.Node {
+	count := n.ChildCount()
+	for i := 0; i < count; i++ {
+		c := n.Child(i)
+		if c == nil || c.IsNamed() {
+			continue
+		}
+		if c.Type(lang) == "=" {
+			return c
 		}
 	}
 	return nil
