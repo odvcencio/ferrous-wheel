@@ -1,6 +1,8 @@
 package ferrouswheel
 
 import (
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 )
@@ -184,6 +186,15 @@ func main() {
 	}
 }
 
+// TestTranspileStandaloneRangeExpression regression-protects the emitRange
+// fix in transpile.go: a range expression used outside a for-in loop or
+// list comprehension has no valid Go translation (Go has no range
+// value/type usable in an arbitrary expression position), so it must be a
+// clear transpile error — not the old silent `/* range 1..3 */` comment,
+// which produced generated Go that doesn't parse (`_ = /* range 1..3 */`
+// isn't a valid assignment). See also TestTranspileRangeIndexExpression
+// for the fuzz-discovered variant of this same bug
+// (arr[0..2] as a subscript).
 func TestTranspileStandaloneRangeExpression(t *testing.T) {
 	source := []byte(`package main
 
@@ -191,12 +202,88 @@ func main() {
 	_ = 1 .. 3
 }
 `)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected an error for a standalone range expression, got nil")
+	}
+	if !strings.Contains(err.Error(), "only valid as the iterable") {
+		t.Fatalf("expected a range-misuse error, got: %v", err)
+	}
+}
+
+// TestTranspileRangeIndexExpression regression-protects against a range
+// expression used as an index/subscript (`arr[0..2]`), found by
+// FuzzTranspileProducesParsableGo as `0[0..0]` (which previously emitted
+// `0[/* range 0..0 */]`, invalid Go — see fuzz corpus entry
+// testdata/fuzz/FuzzTranspileProducesParsableGo/1b96d5120dea47ff).
+func TestTranspileRangeIndexExpression(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	xs := []int{1, 2, 3}
+	_ = xs[0 .. 2]
+}
+`)
+	_, err := Transpile(source)
+	if err == nil {
+		t.Fatal("expected an error for a range expression used as an index, got nil")
+	}
+	if !strings.Contains(err.Error(), "only valid as the iterable") {
+		t.Fatalf("expected a range-misuse error, got: %v", err)
+	}
+}
+
+// TestTranspileRangeComprehensionNoFalseError regression-protects against a
+// bug introduced (and caught before it shipped) alongside the emitRange
+// fix: emitListComprehension used to unconditionally call t.emit(iterable)
+// to build a default loop header string that gets discarded and replaced
+// whenever the iterable is a range_expression. Since emitRange now records
+// a transpileError as a side effect for any range not directly consumed by
+// its caller, that speculative-then-discarded call wrongly flagged every
+// range-based comprehension as misuse, even though the actual loop it
+// produces is correct.
+func TestTranspileRangeComprehensionNoFalseError(t *testing.T) {
+	source := []byte(`package main
+
+func main() {
+	squares := [x * x for x in 0 .. 10]
+	_ = squares
+}
+`)
 	goCode, err := Transpile(source)
 	if err != nil {
 		t.Fatalf("transpile: %v", err)
 	}
-	if !strings.Contains(goCode, "/* range 1..3 */") {
-		t.Fatalf("expected standalone range comment, got:\n%s", goCode)
+	if !strings.Contains(goCode, "for x := 0; x < 10; x++") {
+		t.Fatalf("expected a counting loop, got:\n%s", goCode)
+	}
+}
+
+// TestTranspileForInBlankRangeVar regression-protects `for _ in 0..N` (and
+// the comprehension equivalent `[... for _ in 0..N]`) — a reasonable way to
+// write "repeat N times, discard the value" — which previously transpiled
+// to `for _ := 0; _ < N; _++`, invalid Go since the blank identifier can be
+// assigned but never read.
+func TestTranspileForInBlankRangeVar(t *testing.T) {
+	source := []byte(`package main
+import "fmt"
+
+func main() {
+	for _ in 0 .. 3 {
+		fmt.Println("tick")
+	}
+}
+`)
+	goCode, err := Transpile(source)
+	if err != nil {
+		t.Fatalf("transpile: %v", err)
+	}
+	if strings.Contains(goCode, "for _ :=") || strings.Contains(goCode, "_++") {
+		t.Fatalf("expected a synthetic counter variable, not a re-read/incremented blank identifier, got:\n%s", goCode)
+	}
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, "generated.go", goCode, parser.AllErrors); err != nil {
+		t.Fatalf("generated Go should parse: %v\n%s", err, goCode)
 	}
 }
 
