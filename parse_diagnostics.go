@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"go/scanner"
+	"go/token"
 	"strings"
 	"unicode/utf8"
 
@@ -551,6 +553,67 @@ func validateTopLevelDeclarationsOnly(root *gotreesitter.Node, lang *gotreesitte
 		return errors.New("parse errors in ferrous-wheel source:\n" + loc.format(sourceFile))
 	}
 	return nil
+}
+
+// validateImplBodies rejects ordinary statements inside impl blocks. The
+// grammar reuses a function-body block here, but the impl emitter moves its
+// contents to package scope. Only named methods can be emitted there.
+func validateImplBodies(root *gotreesitter.Node, lang *gotreesitter.Language, src []byte, sourceFile string) error {
+	var walk func(*gotreesitter.Node) error
+	walk = func(n *gotreesitter.Node) error {
+		if n == nil {
+			return nil
+		}
+		if n.Type(lang) == "impl_block" {
+			for i := 0; i < int(n.NamedChildCount()); i++ {
+				block := n.NamedChild(i)
+				if block.Type(lang) != "block" {
+					continue
+				}
+				for j := 0; j < int(block.NamedChildCount()); j++ {
+					list := block.NamedChild(j)
+					if list.Type(lang) != "statement_list" {
+						continue
+					}
+					for k := 0; k < int(list.NamedChildCount()); k++ {
+						statement := list.NamedChild(k)
+						if statement.Type(lang) == "comment" {
+							continue
+						}
+						if statement.Type(lang) == "expression_statement" && statement.NamedChildCount() == 1 &&
+							statement.NamedChild(0).Type(lang) == "func_literal" &&
+							isNamedImplMethod(src[statement.StartByte():statement.EndByte()]) {
+							continue
+						}
+						loc := newParseErrorLocation(src, statement.StartPoint(), "impl blocks may contain only named methods")
+						return errors.New("parse errors in ferrous-wheel source:\n" + loc.format(sourceFile))
+					}
+				}
+			}
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			if err := walk(n.NamedChild(i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(root)
+}
+
+func isNamedImplMethod(src []byte) bool {
+	// The current emitter recognizes "func " literally. Reject a spelling
+	// it cannot rewrite into a Go method before it reaches package scope.
+	if !bytes.HasPrefix(src, []byte("func ")) {
+		return false
+	}
+	file := token.NewFileSet().AddFile("impl", 1, len(src))
+	var lex scanner.Scanner
+	lex.Init(file, src, nil, 0)
+	_, first, _ := lex.Scan()
+	_, name, _ := lex.Scan()
+	_, params, _ := lex.Scan()
+	return first == token.FUNC && name == token.IDENT && params == token.LPAREN
 }
 
 // newUnparsedTextError formats a diagnostic for a byte range of source that

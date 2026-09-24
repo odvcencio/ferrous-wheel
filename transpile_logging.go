@@ -1,6 +1,7 @@
 package ferrouswheel
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -19,23 +20,26 @@ var logLevelToSlog = map[string]string{
 }
 
 func (t *fwTranspiler) emitLogStatement(n *gotreesitter.Node) string {
-	t.needsSlog = true
-	t.needsLogHelper = true
-	t.needsContext = true
-
 	levelNode := t.childByField(n, "level")
 	if levelNode == nil {
 		return t.text(n)
 	}
 	level := t.text(levelNode)
+	slogCall, ok := logLevelToSlog[level]
+	if !ok {
+		loc := newParseErrorLocation(t.src, levelNode.StartPoint(), fmt.Sprintf("unknown log level %q; use trace, debug, info, warn, error, or fatal", level))
+		t.transpileErrors = append(t.transpileErrors, errors.New("parse errors in ferrous-wheel source:\n"+loc.format(t.sourceFile)))
+		return ""
+	}
+	t.needsSlog = true
+	t.needsLogHelper = true
+	t.needsContext = true
 
 	msgNode := t.childByField(n, "message")
 	if msgNode == nil {
 		return t.text(n)
 	}
 	msg := t.emit(msgNode)
-
-	slogCall := logLevelToSlog[level]
 
 	attrs := t.collectLogAttrs(n)
 
