@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -32,12 +33,35 @@ const fwGrammarBlobSHA256 = %q
 		checkCurrent("grammar_artifact_manifest.go", manifest)
 		return
 	}
-	if err := writeAtomic("grammar.bin", blob); err != nil {
-		fatal("write grammar.bin: %v", err)
+	if err := writeArtifactPair("grammar.bin", blob, "grammar_artifact_manifest.go", manifest); err != nil {
+		fatal("update grammar artifacts: %v", err)
 	}
-	if err := writeAtomic("grammar_artifact_manifest.go", manifest); err != nil {
-		fatal("write grammar_artifact_manifest.go: %v", err)
+}
+
+// writeArtifactPair restores the old blob if the manifest replacement fails.
+// The loader also checks the checksum, so a process killed between replacements
+// fails closed until the generator or source control restores a matching pair.
+func writeArtifactPair(blobPath string, blob []byte, manifestPath string, manifest []byte) error {
+	oldBlob, readErr := os.ReadFile(blobPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return fmt.Errorf("read old %s: %w", blobPath, readErr)
 	}
+	if err := writeAtomic(blobPath, blob); err != nil {
+		return fmt.Errorf("write %s: %w", blobPath, err)
+	}
+	if err := writeAtomic(manifestPath, manifest); err != nil {
+		var restoreErr error
+		if errors.Is(readErr, os.ErrNotExist) {
+			restoreErr = os.Remove(blobPath)
+		} else {
+			restoreErr = writeAtomic(blobPath, oldBlob)
+		}
+		if restoreErr != nil {
+			return errors.Join(fmt.Errorf("write %s: %w", manifestPath, err), fmt.Errorf("restore %s: %w", blobPath, restoreErr))
+		}
+		return fmt.Errorf("write %s: %w", manifestPath, err)
+	}
+	return nil
 }
 
 func checkCurrent(path string, want []byte) {
