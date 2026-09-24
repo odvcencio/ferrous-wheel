@@ -46,19 +46,23 @@ func main() {
 ## Install
 
 Use Go 1.25.0 or newer. The Go module path is `m31labs.dev/ferrous-wheel`.
-Pin the Ferrous Wheel release in build scripts. This example uses v0.7.0:
+Pin the Ferrous Wheel release in build scripts. This example uses v0.7.1:
 
 ```bash
-GOWORK=off go install m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.0
+mkdir -p .bin
+GOBIN="$PWD/.bin" GOWORK=off go install m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.1
 ```
 
 The pinned compiler can build or run a script:
 
 ```bash
-GOWORK=off go run m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.0 build myfile.fw -o dist/myapp
+./.bin/ferrous-wheel build myfile.fw -o dist/myapp
 ./dist/myapp "two words"
-GOWORK=off go run m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.0 run myfile.fw -- "two words"
+./.bin/ferrous-wheel run myfile.fw -- "two words"
 ```
+
+Invoke the installed binary directly when you need the script's exit code.
+The `go run` wrapper returns code 1 for a nonzero program exit.
 
 The v0.6.0 `run` command accepts no program arguments, starts the program in
 a staging directory, and reports exit code 1 for any nonzero program exit.

@@ -18,7 +18,7 @@ The `ferrous-wheel` binary must be on your `PATH`. Use Go 1.25.0 or newer to
 install it. The Go module path is `m31labs.dev/ferrous-wheel`. Pin the release:
 
 ```sh
-GOWORK=off go install m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.0
+GOWORK=off go install m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.1
 ```
 
 Or download a release binary from the [main repository](https://github.com/odvcencio/ferrous-wheel).

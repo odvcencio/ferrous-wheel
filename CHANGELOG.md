@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.7.1 — 2026-09-23
+
+- The README now runs the pinned compiler binary directly. The earlier
+  `go run` example masked nonzero script exit codes and added an error line.
+
 ## v0.7.0 — 2026-09-23
 
 ### Run command
