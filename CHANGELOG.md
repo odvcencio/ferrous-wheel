@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Reproducible packages
+
+- Add `package` with exact compiler and Go executable checksums and a Go
+  version check. It writes CGO-disabled target binaries and a checksum
+  manifest to a new output directory.
+
 ## v0.7.1 — 2026-09-23
 
 - The README now runs the pinned compiler binary directly. The earlier
