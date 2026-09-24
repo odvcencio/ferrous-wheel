@@ -515,16 +515,16 @@ func _fwUnsafeCast[To any, From any](from From) To {
 
 // injectGenericTypes appends Result and Option type definitions at the end of
 // the file when the transpiled code references them.
-func (t *fwTranspiler) injectGenericTypes(code string) string {
-	if !t.needsResultType && !t.needsOptionType {
+func (t *fwTranspiler) injectGenericTypes(code string, opts TranspileOptions) string {
+	if (!t.needsResultType || opts.OmitResultType) && (!t.needsOptionType || opts.OmitOptionType) {
 		return code
 	}
 	var b strings.Builder
 	b.WriteString(code)
-	if t.needsResultType {
+	if t.needsResultType && !opts.OmitResultType {
 		b.WriteString(resultTypeDef)
 	}
-	if t.needsOptionType {
+	if t.needsOptionType && !opts.OmitOptionType {
 		b.WriteString(optionTypeDef)
 	}
 	return b.String()

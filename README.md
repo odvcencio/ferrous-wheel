@@ -73,8 +73,8 @@ exit code.
 
 ## Usage
 
-These commands describe the current source tree. The `package` command will
-ship in the next release.
+These commands describe the current source tree. The `package` command and
+directory inputs will ship in the next release.
 
 ```bash
 ferrous-wheel emit  myfile.fw                      # transpile to Go on stdout
@@ -104,6 +104,47 @@ The command writes binaries and `manifest.json` to a new output directory.
 The manifest records source, module, tool, and artifact checksums. Linux
 targets use CGO-disabled static binaries. Keep the compiler and Go toolchain
 pins with the manifest when you publish an artifact.
+
+### Directory packages
+
+The unreleased directory mode builds all `.fw` files in one directory as one
+Go package. Give `run`, `build`, or `package` a directory to use it. A
+`file.fw` argument still builds only that file. This keeps existing scripts
+that share a directory independent.
+
+Directory mode includes every `.fw` file in each package. It does not apply
+Go build tags to `.fw` files.
+
+```bash
+ferrous-wheel run ./cmd/tool -- "two words"
+ferrous-wheel build ./cmd/tool -o dist/tool
+```
+
+The compiler follows imports within the nearest Go module and builds local
+`.fw` packages with their Go packages. Directory builds ignore a caller's
+`go.work` file. The compiler uses the source directory for Go
+imports and `go:embed` paths. It reports an import cycle with a source file
+and line. Without a `go.mod`, it builds the input directory in a temporary
+module and includes adjacent assets. `run` still starts the program in the
+caller's working directory. Set `--cwd ./cmd/tool` when the program reads an
+adjacent file at run time.
+
+Directory `package` output uses manifest schema 2. Its `sourceFiles` list has
+each reachable `.fw` file in sorted module-relative order. `packageSHA256`
+hashes each path and file hash in that order. The existing `file.fw` package
+form keeps manifest schema 1.
+
+### Version policy
+
+Pin a released compiler version and the Go toolchain in automation. Ferrous
+Wheel follows semantic versioning for `.fw` syntax and CLI behavior. A major
+version can change existing source behavior. A minor version can add syntax
+or commands. A patch version fixes defects without changing documented
+behavior. The package manifest has its own schema version.
+
+Generated Go is a build artifact. Its text and private helper names can
+change between compiler releases. Build it with the compiler and Go version
+that the package manifest records. Keep `.fw` files as the source of record.
 
 ---
 
