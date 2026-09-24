@@ -1,0 +1,108 @@
+package main
+
+// Prototype for nightwatch/codex-lane.sh. Build to a binary before invoking.
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+	"m31labs.dev/ferrous-wheel/ops"
+)
+
+var laneName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+func safeLane(name string) bool { return name != "." && name != ".." && laneName.MatchString(name) }
+
+func run(args []string) int {
+	if len(args) < 5 || len(args) > 6 {
+		fmt.Fprintln(os.Stderr, "usage: codex-lane <lane> <model> <effort> <worktree> <brief-file> [hours]")
+		return 2
+	}
+	lane, model, effort, wt, briefPath := args[0], args[1], args[2], args[3], args[4]
+	if !safeLane(lane) {
+		fmt.Fprintln(os.Stderr, "invalid lane name")
+		return 2
+	}
+	hours := 5
+	if len(args) == 6 {
+		var err error
+		hours, err = strconv.Atoi(args[5])
+		if err != nil || hours < 1 || hours > 168 {
+			fmt.Fprintln(os.Stderr, "hours must be 1..168")
+			return 2
+		}
+	}
+	info, err := os.Stat(wt)
+	if err != nil || !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "no worktree %s\n", wt)
+		return 2
+	}
+	brief, err := os.ReadFile(briefPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	state := os.Getenv("FW_CODEX_LANE_STATE_DIR")
+	if state == "" {
+		state = "/home/draco/.local/state/nightwatch/codex"
+	}
+	if err := os.MkdirAll(state, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	metaPath := filepath.Join(state, lane+".meta")
+	logPath := filepath.Join(state, lane+".jsonl")
+	lastPath := filepath.Join(state, lane+".last.md")
+	start := fmt.Sprintf("lane=%s model=%s effort=%s wt=%s start=%s\n", lane, model, effort, wt, time.Now().Format(time.RFC3339))
+	if err := os.WriteFile(metaPath, []byte(start), 0644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	result, runErr := ops.Run(context.Background(), ops.Spec{
+		Argv: []string{"codex", "exec", "-m", model, "-c", "model_reasoning_effort=\""+effort+"\"",
+			"--dangerously-bypass-approvals-and-sandbox", "-C", wt, "--json", "-o", lastPath, string(brief)},
+		Cwd: wt, Timeout: time.Duration(hours) * time.Hour, Output: ops.Stream,
+		Stdout: logFile, Stderr: logFile,
+	})
+	rc := result.ExitCode
+	if result.TimedOut {
+		rc = 124
+	} else if rc < 0 {
+		rc = 1
+	}
+	if runErr != nil {
+		fmt.Fprintln(os.Stderr, runErr)
+	}
+	if err := logFile.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "close log:", err)
+		if rc == 0 {
+			rc = 1
+		}
+	}
+	if err := ops.AppendFile(metaPath, []byte(fmt.Sprintf("end=%s rc=%d\n", time.Now().Format(time.RFC3339), rc)), 0644); err != nil {
+		fmt.Fprintln(os.Stderr, "write metadata:", err)
+		if rc == 0 { rc = 1 }
+	}
+	fmt.Printf("codex lane %s exited rc=%d\n", lane, rc)
+	if last, err := os.ReadFile(lastPath); err == nil {
+		if len(last) > 2500 {
+			last = last[len(last)-2500:]
+		}
+		fmt.Print(strings.TrimSpace(string(last)))
+		fmt.Println()
+	}
+	return rc
+}
+
+func main() {
+	os.Exit(run(os.Args[1:]))
+}

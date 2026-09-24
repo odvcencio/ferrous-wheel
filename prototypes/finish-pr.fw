@@ -1,0 +1,194 @@
+package main
+
+// Prototype for nightwatch/finish-pr.sh. --dry-run only reads PR state.
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+	"m31labs.dev/ferrous-wheel/ops"
+)
+
+type prView struct {
+	State           string `json:"state"`
+	MergeStateStatus string `json:"mergeStateStatus"`
+	HeadRefOid      string `json:"headRefOid"`
+	MergeCommit     *struct { Oid string `json:"oid"` } `json:"mergeCommit"`
+}
+
+var repoNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var prNumberPattern = regexp.MustCompile(`^[0-9]+$`)
+
+func view(repo, pr string, fields string) (prView, error) {
+	result, err := ops.Run(context.Background(), ops.GH(repo, "pr", "view", pr, "--json", fields))
+	if err != nil {
+		return prView{}, fmt.Errorf("gh pr view: %w", err)
+	}
+	return ops.DecodeJSONAt[prView](result.Stdout, "")
+}
+
+func invoke(out io.Writer, spec ops.Spec) error {
+	spec.Output, spec.Stdout, spec.Stderr = ops.Stream, out, out
+	_, err := ops.Run(context.Background(), spec)
+	return err
+}
+
+func capture(spec ops.Spec) (string, error) {
+	result, err := ops.Run(context.Background(), spec)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(result.Stdout)), nil
+}
+
+func run(args []string) (rc int) {
+	dryRun := false
+	if len(args) > 0 && args[0] == "--dry-run" {
+		dryRun = true
+		args = args[1:]
+	}
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: finish-pr [--dry-run] <repo> <pr> <worktree>")
+		return 2
+	}
+	repoName, pr, wt := args[0], args[1], args[2]
+	if !repoNamePattern.MatchString(repoName) {
+		fmt.Fprintln(os.Stderr, "invalid repository name")
+		return 2
+	}
+	if !prNumberPattern.MatchString(pr) {
+		fmt.Fprintln(os.Stderr, "invalid PR number")
+		return 2
+	}
+	logDir := os.Getenv("FW_FINISH_PR_LOG_DIR")
+	if logDir == "" {
+		logDir = "/home/draco/.local/state/nightwatch"
+	}
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	logPath := filepath.Join(logDir, fmt.Sprintf("finish-pr-%s-%s.log", repoName, pr))
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer func() {
+		if err := logFile.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "close log:", err)
+			if rc == 0 { rc = 8 }
+		}
+	}()
+	logFailed := false
+	log := func(message string) {
+		line := fmt.Sprintf("%s %s\n", time.Now().UTC().Format("15:04:05"), message)
+		if _, err := fmt.Print(line); err != nil {
+			fmt.Fprintf(os.Stderr, "write output: %v\n", err)
+			logFailed = true
+		}
+		if _, err := logFile.WriteString(line); err != nil {
+			fmt.Fprintf(os.Stderr, "write log: %v\n", err)
+			logFailed = true
+		}
+	}
+	stop := func(code int, message string) int {
+		log(message)
+		if logFailed { return 8 }
+		return code
+	}
+	R := "odvcencio/" + repoName
+	for round := 1; round <= 3; round++ {
+		if logFailed { return 8 }
+		current, err := view(R, pr, "state,mergeStateStatus")
+		if err != nil {
+			return stop(3, fmt.Sprintf("#%s STOP: %v", pr, err))
+		}
+		st := current.State + " " + current.MergeStateStatus
+		log(fmt.Sprintf("#%s round %d: %s", pr, round, st))
+		if logFailed { return 8 }
+		if current.State == "MERGED" || current.State == "CLOSED" {
+			return stop(0, fmt.Sprintf("#%s already %s", pr, st))
+		}
+		if dryRun {
+			return stop(0, fmt.Sprintf("#%s dry-run: would check CI, sync %s, review, and merge only after gates", pr, wt))
+		}
+		if strings.Contains(st, "DIRTY") {
+			return stop(3, fmt.Sprintf("#%s STOP: merge conflicts", pr))
+		}
+		if strings.Contains(st, "BEHIND") {
+			if err := invoke(logFile, ops.GH(R, "pr", "update-branch", pr)); err != nil {
+				return stop(3, fmt.Sprintf("#%s STOP: update-branch failed: %v", pr, err))
+			}
+			time.Sleep(20 * time.Second)
+		}
+		time.Sleep(30 * time.Second)
+		watch := ops.GH(R, "pr", "checks", pr, "--watch", "--interval", "60")
+		watch.Timeout, watch.Output = 90*time.Minute, ops.Discard
+		if _, err := ops.Run(context.Background(), watch); err != nil {
+			return stop(4, fmt.Sprintf("#%s STOP: check watch failed: %v", pr, err))
+		}
+		if err := invoke(logFile, ops.GH(R, "pr", "checks", pr)); err != nil {
+			return stop(4, fmt.Sprintf("#%s STOP: checks not green", pr))
+		}
+		headView, err := view(R, pr, "headRefOid")
+		if err != nil || headView.HeadRefOid == "" {
+			return stop(5, fmt.Sprintf("#%s STOP: cannot read head", pr))
+		}
+		head := headView.HeadRefOid
+		if err := invoke(logFile, ops.Git(wt, "fetch", "-q", "origin")); err != nil {
+			return stop(5, fmt.Sprintf("#%s STOP: fetch failed", pr))
+		}
+		if err := invoke(logFile, ops.Git(wt, "merge", "-q", "--ff-only", head)); err != nil {
+			return stop(5, fmt.Sprintf("#%s STOP: fast-forward failed", pr))
+		}
+		localHead, err := capture(ops.Git(wt, "rev-parse", "HEAD"))
+		if err != nil || localHead != head {
+			return stop(5, fmt.Sprintf("#%s STOP: worktree not at PR head", pr))
+		}
+		buckbotPath := logPath + ".buckbot"
+		buckbotLog, err := os.Create(buckbotPath)
+		if err != nil {
+			return stop(6, fmt.Sprintf("#%s STOP: cannot create buckbot log", pr))
+		}
+		buckbot := ops.Spec{Argv: []string{"buckley", "buckbot", "pr", pr,
+			"--timeout", "35m", "-model", "openai/gpt-6-luna-pro"}, Cwd: wt, Timeout: 40*time.Minute}
+		buckbotErr := invoke(buckbotLog, buckbot)
+		closeErr := buckbotLog.Close()
+		buckbotData, readErr := os.ReadFile(buckbotPath)
+		if buckbotErr != nil || closeErr != nil || readErr != nil || !bytes.Contains(buckbotData, []byte("Blockers**: NONE")) {
+			return stop(6, fmt.Sprintf("#%s STOP: buckbot blockers or no verdict (see %s)", pr, buckbotPath))
+		}
+		finalView, err := view(R, pr, "mergeStateStatus,headRefOid")
+		if err != nil {
+			return stop(7, fmt.Sprintf("#%s STOP: cannot recheck head", pr))
+		}
+		if strings.Contains(finalView.MergeStateStatus, "BEHIND") {
+			log(fmt.Sprintf("#%s behind again after review; next round", pr))
+			continue
+		}
+		if finalView.HeadRefOid != head {
+			log(fmt.Sprintf("#%s head moved during review; next round", pr))
+			continue
+		}
+		if err := invoke(logFile, ops.GH(R, "pr", "merge", pr, "--squash")); err == nil {
+			merged, viewErr := view(R, pr, "mergeCommit")
+			commit := "unknown"
+			if viewErr == nil && merged.MergeCommit != nil {
+				commit = merged.MergeCommit.Oid
+			}
+			return stop(0, fmt.Sprintf("#%s MERGED %s", pr, commit))
+		}
+		log(fmt.Sprintf("#%s merge command failed; next round", pr))
+	}
+	return stop(7, fmt.Sprintf("#%s STOP: gave up after 3 rounds", pr))
+}
+
+func main() {
+	os.Exit(run(os.Args[1:]))
+}
