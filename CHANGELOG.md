@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Run command
+
+- `run` now passes arguments after `--` to the program without changing them.
+- `run` now starts the program in the caller's working directory. Before this
+  change, it started the program in a temporary staging directory. Set
+  `--cwd DIR` when the program needs another directory. Give files that the
+  program creates an explicit path if they used the temporary directory.
+- `run` now returns the program's exit code. It prints one error line when
+  the program exits with a nonzero code.
+- `run` forwards SIGINT and SIGTERM to the program's process group. It removes
+  the staging directory after the program stops.
+
 ## v0.6.0 — 2026-07-17
 
 Stabilization pass: seven parser/transpiler correctness bugs found by an

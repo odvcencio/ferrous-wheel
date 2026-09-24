@@ -406,13 +406,13 @@ func TestRunCLIErrors(t *testing.T) {
 			name:       "missing run file",
 			args:       []string{"ferrous-wheel", "run"},
 			wantCode:   1,
-			wantStderr: "Usage: ferrous-wheel run <file.fw>",
+			wantStderr: "Usage: ferrous-wheel run [--cwd DIR] <file.fw> [-- <args>...]",
 		},
 		{
 			name:       "extra run arg",
 			args:       []string{"ferrous-wheel", "run", "main.fw", "extra"},
 			wantCode:   1,
-			wantStderr: "Usage: ferrous-wheel run <file.fw>",
+			wantStderr: "Usage: ferrous-wheel run [--cwd DIR] <file.fw> [-- <args>...]",
 		},
 		{
 			name:       "missing build file",
