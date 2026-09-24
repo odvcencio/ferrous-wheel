@@ -870,25 +870,21 @@ func (r *redundantTryRule) Check(n *gotreesitter.Node, ctx *LintContext) []LintD
 	if err != nil || typ == nil {
 		return nil
 	}
-	// Check if the resolved type is a tuple/result that ends with error
-	// If it's a FuncType, check its return types
-	if ft, ok := typ.(*FuncType); ok {
-		if len(ft.Results) > 0 {
-			lastRet := ft.Results[len(ft.Results)-1]
-			if lastRet.String() == "error" {
-				return nil // valid try usage
-			}
+	// Resolve(call_expression) returns its result type, not its function
+	// signature. The try lowering requires a value and a trailing error.
+	if tuple, ok := typ.(*TupleType); ok && len(tuple.Elems) >= 2 {
+		if tuple.Elems[len(tuple.Elems)-1].String() == "error" {
+			return nil
 		}
-		pt := n.StartPoint()
-		return []LintDiagnostic{{
-			Rule:     r.Name(),
-			Line:     int(pt.Row) + 1,
-			Col:      int(pt.Column) + 1,
-			Message:  "try/? on a function that doesn't return error",
-			Severity: r.Severity(),
-		}}
 	}
-	return nil
+	pt := n.StartPoint()
+	return []LintDiagnostic{{
+		Rule:     r.Name(),
+		Line:     int(pt.Row) + 1,
+		Col:      int(pt.Column) + 1,
+		Message:  "try/? requires a value and a trailing error result",
+		Severity: r.Severity(),
+	}}
 }
 
 // ---------- shadowed-let rule ----------

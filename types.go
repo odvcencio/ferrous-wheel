@@ -198,6 +198,9 @@ const (
 type UntypedConstType struct{ Kind UntypedKind }
 
 func (u *UntypedConstType) String() string {
+	if u.Kind == UntypedNil {
+		return "untyped nil"
+	}
 	return "untyped " + u.Default().String()
 }
 func (u *UntypedConstType) typeTag() {}
@@ -276,6 +279,28 @@ func TypeEquals(a, b Type) bool {
 		}
 		for i := range a.Results {
 			if !TypeEquals(a.Results[i], b.Results[i]) {
+				return false
+			}
+		}
+		return true
+	case *TupleType:
+		b, ok := b.(*TupleType)
+		if !ok || len(a.Elems) != len(b.Elems) {
+			return false
+		}
+		for i := range a.Elems {
+			if !TypeEquals(a.Elems[i], b.Elems[i]) {
+				return false
+			}
+		}
+		return true
+	case *GenericType:
+		b, ok := b.(*GenericType)
+		if !ok || a.Name != b.Name || len(a.TypeParams) != len(b.TypeParams) {
+			return false
+		}
+		for i := range a.TypeParams {
+			if !TypeEquals(a.TypeParams[i], b.TypeParams[i]) {
 				return false
 			}
 		}

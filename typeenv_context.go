@@ -280,7 +280,8 @@ func registerVarDeclBindings(env *TypeEnv, node *gotreesitter.Node, _ SymbolKind
 		case "var_spec", "const_spec":
 			explicit := resolveTypeExprNormalized(spec.ChildByFieldName("type", lang), env, lang, src)
 			value := spec.ChildByFieldName("value", lang)
-			inferred := normalizeType(resolveValueType(env, value, lang, src))
+			inferred := resolveExpressionListTypes(env, value, lang, src)
+			nameIndex := 0
 			for j := 0; j < int(spec.ChildCount()); j++ {
 				if spec.FieldNameForChild(j, lang) != "name" {
 					continue
@@ -290,10 +291,11 @@ func registerVarDeclBindings(env *TypeEnv, node *gotreesitter.Node, _ SymbolKind
 					continue
 				}
 				typ := explicit
-				if typ == nil {
-					typ = inferred
+				if typ == nil && nameIndex < len(inferred) {
+					typ = inferred[nameIndex]
 				}
 				registerBinding(env, nodeText(src, nameNode), typ)
+				nameIndex++
 			}
 		}
 	}
@@ -390,6 +392,16 @@ func resolveTypeExprNormalized(node *gotreesitter.Node, env *TypeEnv, lang *gotr
 
 func resolveExpressionListTypes(env *TypeEnv, exprList *gotreesitter.Node, lang *gotreesitter.Language, src []byte) []Type {
 	if env == nil || exprList == nil {
+		return nil
+	}
+	if exprList.Type(lang) != "expression_list" {
+		typ := resolveValueType(env, exprList, lang, src)
+		if tuple, ok := typ.(*TupleType); ok {
+			return tuple.Elems
+		}
+		if typ != nil {
+			return []Type{typ}
+		}
 		return nil
 	}
 	if exprList.NamedChildCount() == 1 {

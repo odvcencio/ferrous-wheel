@@ -76,6 +76,14 @@ func validateTopLevelOnly(root *gotreesitter.Node, lang *gotreesitter.Language, 
 		if env == nil || exprList == nil {
 			return nil
 		}
+		// Tuple let binds its value directly to a call node, while := wraps
+		// the right side in expression_list. Resolve the whole value first.
+		if typ := resolveNodeType(exprList); typ != nil {
+			if tuple, ok := typ.(*TupleType); ok {
+				return tuple.Elems
+			}
+			return []Type{typ}
+		}
 		if exprList.NamedChildCount() == 1 {
 			typ := resolveNodeType(exprList.NamedChild(0))
 			if tuple, ok := typ.(*TupleType); ok {

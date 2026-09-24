@@ -12,11 +12,15 @@ func UnifyWithContext(ctx *InferenceContext, a, b Type) (Type, error) {
 	b = ctx.Apply(b)
 	// If either is a TypeVar, bind it and return
 	if tv, ok := a.(*TypeVar); ok {
-		ctx.subst[tv.ID] = b
+		if err := ctx.unify(tv, b); err != nil {
+			return nil, err
+		}
 		return b, nil
 	}
 	if tv, ok := b.(*TypeVar); ok {
-		ctx.subst[tv.ID] = a
+		if err := ctx.unify(a, tv); err != nil {
+			return nil, err
+		}
 		return a, nil
 	}
 	// Both concrete -- delegate to existing Unify

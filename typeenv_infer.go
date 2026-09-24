@@ -109,12 +109,18 @@ func (ctx *InferenceContext) unify(a, b Type) error {
 
 	// If a is a TypeVar, bind it
 	if av, ok := a.(*TypeVar); ok {
+		if ctx.occursIn(av.ID, b) {
+			return fmt.Errorf("recursive type: %s occurs in %s", av, b)
+		}
 		ctx.subst[av.ID] = b
 		return nil
 	}
 
 	// If b is a TypeVar, bind it
 	if bv, ok := b.(*TypeVar); ok {
+		if ctx.occursIn(bv.ID, a) {
+			return fmt.Errorf("recursive type: %s occurs in %s", bv, a)
+		}
 		ctx.subst[bv.ID] = a
 		return nil
 	}
@@ -219,6 +225,48 @@ func (ctx *InferenceContext) unify(a, b Type) error {
 	}
 
 	return fmt.Errorf("cannot unify %s with %s", a, b)
+}
+
+// occursIn rejects substitutions that would make Apply recurse forever.
+// Named and declared types are opaque here, just as they are in Apply.
+func (ctx *InferenceContext) occursIn(id int, t Type) bool {
+	t = ctx.resolve(t)
+	switch v := t.(type) {
+	case *TypeVar:
+		return v.ID == id
+	case *PointerType:
+		return ctx.occursIn(id, v.Elem)
+	case *SliceType:
+		return ctx.occursIn(id, v.Elem)
+	case *MapType:
+		return ctx.occursIn(id, v.Key) || ctx.occursIn(id, v.Value)
+	case *ChanType:
+		return ctx.occursIn(id, v.Elem)
+	case *FuncType:
+		for _, p := range v.Params {
+			if ctx.occursIn(id, p) {
+				return true
+			}
+		}
+		for _, r := range v.Results {
+			if ctx.occursIn(id, r) {
+				return true
+			}
+		}
+	case *TupleType:
+		for _, e := range v.Elems {
+			if ctx.occursIn(id, e) {
+				return true
+			}
+		}
+	case *GenericType:
+		for _, p := range v.TypeParams {
+			if ctx.occursIn(id, p) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolve follows the substitution chain for a TypeVar.

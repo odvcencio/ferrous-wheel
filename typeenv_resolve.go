@@ -12,6 +12,16 @@ func Unify(a, b Type) (Type, error) {
 	if TypeEquals(a, b) {
 		return a, nil
 	}
+	// Nil has no standalone value type and only unifies with nillable types.
+	if isUntypedNil(a) || isUntypedNil(b) {
+		if isUntypedNil(a) && isNillable(b) {
+			return b, nil
+		}
+		if isUntypedNil(b) && isNillable(a) {
+			return a, nil
+		}
+		return nil, fmt.Errorf("incompatible types: %s and %s", a, b)
+	}
 
 	// Rule 2: UntypedConst + concrete -> concrete
 	if ua, ok := a.(*UntypedConstType); ok {
@@ -28,16 +38,11 @@ func Unify(a, b Type) (Type, error) {
 	// Rule 3: two untyped -> promote
 	if ua, ok := a.(*UntypedConstType); ok {
 		if ub, ok := b.(*UntypedConstType); ok {
+			if !compatibleUntypedKinds(ua.Kind, ub.Kind) {
+				return nil, fmt.Errorf("incompatible types: %s and %s", a, b)
+			}
 			return promoteUntyped(ua, ub), nil
 		}
-	}
-
-	// Rule 5: nil + nillable -> nillable
-	if isUntypedNil(a) && isNillable(b) {
-		return b, nil
-	}
-	if isUntypedNil(b) && isNillable(a) {
-		return a, nil
 	}
 
 	// Rule 4 & 6: Named vs underlying does NOT unify; otherwise error
@@ -45,7 +50,57 @@ func Unify(a, b Type) (Type, error) {
 }
 
 func unifyUntypedWithConcrete(u *UntypedConstType, concrete Type) (Type, error) {
-	return concrete, nil
+	underlying := concrete
+	if named, ok := concrete.(*NamedType); ok {
+		underlying = named.Underlying
+	}
+	if _, ok := underlying.(*InterfaceType); ok {
+		return concrete, nil
+	}
+	if primitive, ok := underlying.(Primitive); ok {
+		kind := string(primitive)
+		compatible := false
+		switch u.Kind {
+		case UntypedBool:
+			compatible = kind == "bool" || kind == "any"
+		case UntypedString:
+			compatible = kind == "string" || kind == "any"
+		case UntypedInt, UntypedRune:
+			compatible = kind == "any" || isIntegerTypeName(kind) || isFloatingTypeName(kind)
+		case UntypedFloat:
+			compatible = kind == "any" || isFloatingTypeName(kind)
+		}
+		if compatible {
+			return concrete, nil
+		}
+	}
+	return nil, fmt.Errorf("incompatible types: %s and %s", u, concrete)
+}
+
+func compatibleUntypedKinds(a, b UntypedKind) bool {
+	if a == b {
+		return true
+	}
+	isNumeric := func(k UntypedKind) bool {
+		return k == UntypedInt || k == UntypedRune || k == UntypedFloat
+	}
+	return isNumeric(a) && isNumeric(b)
+}
+
+func isIntegerTypeName(name string) bool {
+	switch name {
+	case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte", "rune":
+		return true
+	}
+	return false
+}
+
+func isFloatingTypeName(name string) bool {
+	switch name {
+	case "float32", "float64", "complex64", "complex128":
+		return true
+	}
+	return false
 }
 
 func promoteUntyped(a, b *UntypedConstType) Type {
@@ -64,9 +119,14 @@ func isUntypedNil(t Type) bool {
 }
 
 func isNillable(t Type) bool {
+	if named, ok := t.(*NamedType); ok {
+		return named.Underlying != nil && isNillable(named.Underlying)
+	}
 	switch t.(type) {
 	case *PointerType, *SliceType, *MapType, *ChanType, *InterfaceType, *FuncType:
 		return true
+	case Primitive:
+		return t == Primitive("any") || t == Primitive("error")
 	}
 	return false
 }
@@ -193,14 +253,16 @@ func (e *TypeEnv) Resolve(n *gotreesitter.Node, lang *gotreesitter.Language, src
 		}
 		if operand.Type(lang) == "identifier" {
 			pkgName := text(operand)
-			if fn, err := e.LookupImportedFunc(pkgName, text(sel)); err == nil {
-				return fn, nil
-			}
-			if typ, err := e.LookupImportedType(pkgName, text(sel)); err == nil {
-				return typ, nil
-			}
-			if typ, err := e.LookupImportedVar(pkgName, text(sel)); err == nil {
-				return typ, nil
+			if _, localErr := e.LookupVar(pkgName); localErr != nil {
+				if fn, err := e.LookupImportedFunc(pkgName, text(sel)); err == nil {
+					return fn, nil
+				}
+				if typ, err := e.LookupImportedType(pkgName, text(sel)); err == nil {
+					return typ, nil
+				}
+				if typ, err := e.LookupImportedVar(pkgName, text(sel)); err == nil {
+					return typ, nil
+				}
 			}
 		}
 		objType, err := e.Resolve(operand, lang, src)
@@ -326,6 +388,9 @@ func (e *TypeEnv) Resolve(n *gotreesitter.Node, lang *gotreesitter.Language, src
 		iterableNode := field("iterable")
 		varNode := field("var")
 		exprNode := field("expression")
+		if exprNode == nil {
+			exprNode = field("expr")
+		}
 		if iterableNode == nil || varNode == nil || exprNode == nil {
 			return nil, fmt.Errorf("list comprehension incomplete")
 		}
