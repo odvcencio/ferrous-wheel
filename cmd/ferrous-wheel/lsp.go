@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	ferrouswheel "m31labs.dev/ferrous-wheel"
 	gotreesitter "github.com/odvcencio/gotreesitter"
+	ferrouswheel "m31labs.dev/ferrous-wheel"
 )
 
 // --- JSON-RPC 2.0 types ---
