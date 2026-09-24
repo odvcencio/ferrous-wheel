@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## v0.8.0 — 2026-09-24
+
+### Operations and host files
+
+- Add typed process specs with argument arrays, working directories,
+  environments, input, output modes, timeouts, cancellation, exit codes, and
+  redacted audit records. Add SSH quoting, Git and GitHub wrappers, and JSON
+  pointer queries.
+- Add rooted file operations, temporary directories, atomic writes, bounded
+  walks and globs, locks, symlink checks, and a dry-run effect log.
+
+### Build and validation
+
+- Load a verified embedded grammar at startup. Add a generator check for the
+  tracked artifact. Reject malformed generated Go with a source diagnostic.
+- Restore Linux race tests in CI. Add macOS and Windows CLI contracts, a WSL
+  path and PowerShell handoff contract, and Go compilation checks for the fuzz
+  corpus.
+
 ### Reproducible packages
 
 - Add `package` with exact compiler and Go executable checksums and a Go
