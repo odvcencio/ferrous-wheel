@@ -210,6 +210,20 @@ func (c *collector) inferExprType(n *gotreesitter.Node) Type {
 	return nil
 }
 
+func (c *collector) inferValueTypes(value *gotreesitter.Node) []Type {
+	if value == nil {
+		return nil
+	}
+	if c.nodeType(value) != "expression_list" {
+		return []Type{c.inferExprType(value)}
+	}
+	types := make([]Type, 0, value.NamedChildCount())
+	for i := 0; i < int(value.NamedChildCount()); i++ {
+		types = append(types, c.inferExprType(value.NamedChild(i)))
+	}
+	return types
+}
+
 // walkChildren visits all named children of a node.
 func (c *collector) walkChildren(n *gotreesitter.Node) {
 	if c.err != nil || n == nil {
@@ -559,20 +573,22 @@ func (c *collector) collectVarDecl(n *gotreesitter.Node) {
 		}
 		explicit := parseTypeString(c.text(c.childByField(spec, "type")))
 		value := c.childByField(spec, "value")
-		inferred := c.inferExprType(value)
+		inferred := c.inferValueTypes(value)
+		nameIndex := 0
 		for j := 0; j < int(spec.ChildCount()); j++ {
 			if spec.FieldNameForChild(j, c.lang) != "name" {
 				continue
 			}
 			nameNode := spec.Child(j)
-			if nameNode == nil {
+			if nameNode == nil || c.nodeType(nameNode) != "identifier" {
 				continue
 			}
 			typ := explicit
-			if typ == nil {
-				typ = inferred
+			if typ == nil && nameIndex < len(inferred) {
+				typ = inferred[nameIndex]
 			}
 			c.registerVarLike(c.text(nameNode), SymVar, typ, nameNode)
+			nameIndex++
 		}
 	}
 }
@@ -585,20 +601,22 @@ func (c *collector) collectConstDecl(n *gotreesitter.Node) {
 		}
 		explicit := parseTypeString(c.text(c.childByField(spec, "type")))
 		value := c.childByField(spec, "value")
-		inferred := c.inferExprType(value)
+		inferred := c.inferValueTypes(value)
+		nameIndex := 0
 		for j := 0; j < int(spec.ChildCount()); j++ {
 			if spec.FieldNameForChild(j, c.lang) != "name" {
 				continue
 			}
 			nameNode := spec.Child(j)
-			if nameNode == nil {
+			if nameNode == nil || c.nodeType(nameNode) != "identifier" {
 				continue
 			}
 			typ := explicit
-			if typ == nil {
-				typ = inferred
+			if typ == nil && nameIndex < len(inferred) {
+				typ = inferred[nameIndex]
 			}
 			c.registerVarLike(c.text(nameNode), SymConst, typ, nameNode)
+			nameIndex++
 		}
 	}
 }

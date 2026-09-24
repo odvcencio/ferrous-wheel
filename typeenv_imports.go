@@ -44,7 +44,7 @@ func (e *TypeEnv) LoadImports(paths []string, moduleDir string) error {
 					e.imports[alias] = scope
 					continue
 				}
-				e.imports[alias] = importScopeWithAlias(scope, alias)
+				e.imports[alias] = importScopeWithAlias(scope, pkg.Name, alias)
 			}
 		}
 	}
@@ -52,65 +52,65 @@ func (e *TypeEnv) LoadImports(paths []string, moduleDir string) error {
 	return nil
 }
 
-func importScopeWithAlias(scope ImportScope, alias string) ImportScope {
+func importScopeWithAlias(scope ImportScope, packageName, alias string) ImportScope {
 	aliased := ImportScope{
 		Funcs: make(map[string]*FuncType, len(scope.Funcs)),
 		Types: make(map[string]Type, len(scope.Types)),
 		Vars:  make(map[string]Type, len(scope.Vars)),
 	}
 	for name, fn := range scope.Funcs {
-		aliased.Funcs[name] = importTypeWithAlias(fn, alias).(*FuncType)
+		aliased.Funcs[name] = importTypeWithAlias(fn, packageName, alias).(*FuncType)
 	}
 	for name, typ := range scope.Types {
-		aliased.Types[name] = importTypeWithAlias(typ, alias)
+		aliased.Types[name] = importTypeWithAlias(typ, packageName, alias)
 	}
 	for name, typ := range scope.Vars {
-		aliased.Vars[name] = importTypeWithAlias(typ, alias)
+		aliased.Vars[name] = importTypeWithAlias(typ, packageName, alias)
 	}
 	return aliased
 }
 
-func importTypeWithAlias(typ Type, alias string) Type {
+func importTypeWithAlias(typ Type, packageName, alias string) Type {
 	switch t := typ.(type) {
 	case nil, Primitive, *UntypedConstType, *UnresolvedType, *TypeParamType:
 		return typ
 	case *PointerType:
-		return &PointerType{Elem: importTypeWithAlias(t.Elem, alias)}
+		return &PointerType{Elem: importTypeWithAlias(t.Elem, packageName, alias)}
 	case *SliceType:
-		return &SliceType{Elem: importTypeWithAlias(t.Elem, alias)}
+		return &SliceType{Elem: importTypeWithAlias(t.Elem, packageName, alias)}
 	case *MapType:
 		return &MapType{
-			Key:   importTypeWithAlias(t.Key, alias),
-			Value: importTypeWithAlias(t.Value, alias),
+			Key:   importTypeWithAlias(t.Key, packageName, alias),
+			Value: importTypeWithAlias(t.Value, packageName, alias),
 		}
 	case *ChanType:
-		return &ChanType{Elem: importTypeWithAlias(t.Elem, alias), Dir: t.Dir}
+		return &ChanType{Elem: importTypeWithAlias(t.Elem, packageName, alias), Dir: t.Dir}
 	case *FuncType:
 		params := make([]Type, 0, len(t.Params))
 		for _, param := range t.Params {
-			params = append(params, importTypeWithAlias(param, alias))
+			params = append(params, importTypeWithAlias(param, packageName, alias))
 		}
 		results := make([]Type, 0, len(t.Results))
 		for _, result := range t.Results {
-			results = append(results, importTypeWithAlias(result, alias))
+			results = append(results, importTypeWithAlias(result, packageName, alias))
 		}
 		return &FuncType{Params: params, Results: results}
 	case *TupleType:
 		elems := make([]Type, 0, len(t.Elems))
 		for _, elem := range t.Elems {
-			elems = append(elems, importTypeWithAlias(elem, alias))
+			elems = append(elems, importTypeWithAlias(elem, packageName, alias))
 		}
 		return &TupleType{Elems: elems}
 	case *StructType:
 		fields := make(map[string]Type, len(t.Fields))
 		for name, fieldType := range t.Fields {
-			fields[name] = importTypeWithAlias(fieldType, alias)
+			fields[name] = importTypeWithAlias(fieldType, packageName, alias)
 		}
 		return &StructType{Name: t.Name, Fields: fields, Comparable: t.Comparable}
 	case *InterfaceType:
 		methods := make(map[string]*FuncType, len(t.Methods))
 		for name, method := range t.Methods {
-			methods[name] = importTypeWithAlias(method, alias).(*FuncType)
+			methods[name] = importTypeWithAlias(method, packageName, alias).(*FuncType)
 		}
 		return &InterfaceType{Name: t.Name, Methods: methods}
 	case *EnumType:
@@ -118,7 +118,7 @@ func importTypeWithAlias(typ Type, alias string) Type {
 		for name, payloads := range t.Variants {
 			copied := make([]Type, 0, len(payloads))
 			for _, payload := range payloads {
-				copied = append(copied, importTypeWithAlias(payload, alias))
+				copied = append(copied, importTypeWithAlias(payload, packageName, alias))
 			}
 			variants[name] = copied
 		}
@@ -126,17 +126,17 @@ func importTypeWithAlias(typ Type, alias string) Type {
 	case *GenericType:
 		args := make([]Type, 0, len(t.TypeParams))
 		for _, arg := range t.TypeParams {
-			args = append(args, importTypeWithAlias(arg, alias))
+			args = append(args, importTypeWithAlias(arg, packageName, alias))
 		}
 		return &GenericType{Name: t.Name, TypeParams: args}
 	case *NamedType:
 		pkg := t.Pkg
-		if pkg != "" {
+		if pkg == packageName {
 			pkg = alias
 		}
 		clone := &NamedType{Pkg: pkg, Name: t.Name}
 		if t.Underlying != nil {
-			clone.Underlying = importTypeWithAlias(t.Underlying, alias)
+			clone.Underlying = importTypeWithAlias(t.Underlying, packageName, alias)
 		}
 		return clone
 	default:
@@ -163,9 +163,31 @@ func buildImportScope(pkg *types.Package) ImportScope {
 			scope.Types[name] = fromGoType(o.Type())
 		case *types.Var:
 			scope.Vars[name] = fromGoType(o.Type())
+		case *types.Const:
+			scope.Vars[name] = fromGoConstantType(o.Type())
 		}
 	}
 	return scope
+}
+
+func fromGoConstantType(typ types.Type) Type {
+	if basic, ok := typ.(*types.Basic); ok {
+		switch basic.Kind() {
+		case types.UntypedInt:
+			return &UntypedConstType{Kind: UntypedInt}
+		case types.UntypedFloat:
+			return &UntypedConstType{Kind: UntypedFloat}
+		case types.UntypedString:
+			return &UntypedConstType{Kind: UntypedString}
+		case types.UntypedBool:
+			return &UntypedConstType{Kind: UntypedBool}
+		case types.UntypedRune:
+			return &UntypedConstType{Kind: UntypedRune}
+		case types.UntypedComplex:
+			return Primitive("complex128")
+		}
+	}
+	return fromGoType(typ)
 }
 
 // LookupImportedFunc resolves a function from a loaded import.
@@ -217,6 +239,17 @@ func fromGoType(t types.Type) Type {
 func fromGoTypeWith(t types.Type, seen map[types.Type]bool) Type {
 	if basic, ok := t.(*types.Basic); ok {
 		return Primitive(basic.Name())
+	}
+	if alias, ok := t.(*types.Alias); ok {
+		pkg := ""
+		if alias.Obj().Pkg() != nil {
+			pkg = alias.Obj().Pkg().Name()
+		}
+		if seen[t] {
+			return &NamedType{Pkg: pkg, Name: alias.Obj().Name()}
+		}
+		seen[t] = true
+		return &NamedType{Pkg: pkg, Name: alias.Obj().Name(), Underlying: fromGoTypeWith(types.Unalias(alias), seen)}
 	}
 
 	// Preserve named type information before unwrapping

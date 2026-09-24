@@ -198,6 +198,9 @@ const (
 type UntypedConstType struct{ Kind UntypedKind }
 
 func (u *UntypedConstType) String() string {
+	if u.Kind == UntypedNil {
+		return "untyped nil"
+	}
 	return "untyped " + u.Default().String()
 }
 func (u *UntypedConstType) typeTag() {}
