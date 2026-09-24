@@ -46,11 +46,11 @@ func main() {
 ## Install
 
 Use Go 1.25.0 or newer. The Go module path is `m31labs.dev/ferrous-wheel`.
-Pin the Ferrous Wheel release in build scripts. This example uses v0.7.1:
+Pin the Ferrous Wheel release in build scripts. This example uses v0.8.0:
 
 ```bash
 mkdir -p .bin
-GOBIN="$PWD/.bin" GOWORK=off go install m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.1
+GOBIN="$PWD/.bin" GOWORK=off go install m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.8.0
 ```
 
 The pinned compiler can build or run a script:
@@ -73,8 +73,7 @@ exit code.
 
 ## Usage
 
-These commands describe the current source tree. The `package` command and
-directory inputs will ship in the next release.
+These commands are available in v0.8.0.
 
 ```bash
 ferrous-wheel emit  myfile.fw                      # transpile to Go on stdout
@@ -107,7 +106,7 @@ pins with the manifest when you publish an artifact.
 
 ### Directory packages
 
-The unreleased directory mode builds all `.fw` files in one directory as one
+Directory mode builds all `.fw` files in one directory as one
 Go package. Give `run`, `build`, or `package` a directory to use it. A
 `file.fw` argument still builds only that file. This keeps existing scripts
 that share a directory independent.
@@ -136,7 +135,7 @@ form keeps manifest schema 1.
 
 ### Static build policy
 
-The unreleased `--policy FILE` option checks agent-run source with `run`,
+The `--policy FILE` option checks agent-run source with `run`,
 `build`, or `package` before compilation or execution. The policy file uses
 JSON. For example:
 

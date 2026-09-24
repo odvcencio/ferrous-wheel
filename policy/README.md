@@ -1,6 +1,6 @@
 # Static build policy
 
-The `policy` package checks `.fw` source before a build. The unreleased CLI option `--policy FILE` accepts its JSON file on `run`, `build`, and `package`. It reports source lines for denied operations. It does not confine a running binary.
+The `policy` package checks `.fw` source before a build. The `--policy FILE` option accepts its JSON file on `run`, `build`, and `package`. It reports source lines for denied operations. It does not confine a running binary.
 
 ```json
 {
