@@ -1,7 +1,10 @@
 package ferrouswheel
 
 import (
+	"bytes"
 	"fmt"
+	goparser "go/parser"
+	"go/token"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -631,6 +634,9 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 	if err := validateTopLevelDeclarationsOnly(root, lang, source, errSourceLabel); err != nil {
 		return "", nil, err
 	}
+	if err := validateImplBodies(root, lang, source, errSourceLabel); err != nil {
+		return "", nil, err
+	}
 	if err := validateNoReservedWordIdentifiers(root, lang, source, errSourceLabel); err != nil {
 		return "", nil, err
 	}
@@ -683,6 +689,12 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 	result = t.injectImports(result)
 	result = t.injectGenericTypes(result)
 	result = t.injectSupportCode(result)
+	if _, err := goparser.ParseFile(token.NewFileSet(), "generated.go", result, 0); err != nil {
+		if errSourceLabel != "" {
+			return "", t.warnings, fmt.Errorf("generated Go from %s is invalid: %w", errSourceLabel, err)
+		}
+		return "", t.warnings, fmt.Errorf("generated Go is invalid: %w", err)
+	}
 	return result, t.warnings, nil
 }
 
@@ -1323,7 +1335,19 @@ func (t *fwTranspiler) emitDefault(n *gotreesitter.Node) string {
 	for i := 0; i < cc; i++ {
 		c := n.Child(i)
 		if c.StartByte() > prev {
-			b.Write(t.src[prev:c.StartByte()])
+			gap := t.src[prev:c.StartByte()]
+			if spineStartsWithHiddenPrefix(c, t.lang) {
+				// _fw_defer_bang is a hidden token. Its source text sits in
+				// this gap while emitDeferError supplies the Go "defer".
+				if at := bytes.LastIndex(gap, []byte("defer!")); at >= 0 {
+					b.Write(gap[:at])
+					b.Write(gap[at+len("defer!"):])
+				} else {
+					b.Write(gap)
+				}
+			} else {
+				b.Write(gap)
+			}
 		}
 		b.WriteString(t.emit(c))
 		prev = c.EndByte()
