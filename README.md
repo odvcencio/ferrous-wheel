@@ -73,13 +73,15 @@ exit code.
 
 ## Usage
 
-These commands require v0.7.0 or newer.
+These commands describe the current source tree. The `package` command will
+ship in the next release.
 
 ```bash
 ferrous-wheel emit  myfile.fw                      # transpile to Go on stdout
 ferrous-wheel run   myfile.fw                      # transpile + execute
 ferrous-wheel run --cwd ./work myfile.fw -- "two words"
 ferrous-wheel build myfile.fw -o dist/myapp        # compile a native binary
+ferrous-wheel package --compiler-sha256 HEX --go-version go1.25.1 --go-sha256 HEX --target linux/amd64 --out dist/pkg myfile.fw
 ferrous-wheel fmt   myfile.fw                      # format .fw source (stdout)
 ferrous-wheel fmt   -w myfile.fw                   # format in-place
 ferrous-wheel fmt   --check myfile.fw              # check formatting (CI)
@@ -94,6 +96,14 @@ program's exit code. `build` accepts `-o` for the output path. `fmt` formats
 `.fw` source files (tabs, operator spacing, match arm alignment). `lint` runs
 19 built-in rules and reports diagnostics. Errors block transpilation;
 warnings do not.
+
+`package` checks the SHA-256 values of the running compiler and Go executable.
+It also checks the exact Go version. Pass `--go PATH` to select the Go
+executable. Pass `--target OS/ARCH` more than once to build several targets.
+The command writes binaries and `manifest.json` to a new output directory.
+The manifest records source, module, tool, and artifact checksums. Linux
+targets use CGO-disabled static binaries. Keep the compiler and Go toolchain
+pins with the manifest when you publish an artifact.
 
 ---
 
