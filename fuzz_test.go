@@ -1,9 +1,14 @@
 package ferrouswheel
 
 import (
+	"context"
 	"go/parser"
 	"go/token"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func FuzzTranspileProducesParsableGo(f *testing.F) {
@@ -127,6 +132,18 @@ func main() {
 	for _, seed := range seeds {
 		f.Add(seed)
 	}
+	// Build this bounded set of valid source files. Arbitrary fuzz mutations
+	// can contain unresolved names, so they keep the parse-only property.
+	compileCorpus := make(map[string]string)
+	for _, name := range []string{"binary_parser.fw", "cli_tool.fw", "http_server.fw", "pipeline.fw", "resilient_client.fw"} {
+		path := filepath.Join("testdata", "corpus", name)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			f.Fatalf("read compile corpus %s: %v", path, err)
+		}
+		f.Add(string(src))
+		compileCorpus[string(src)] = name
+	}
 
 	f.Fuzz(func(t *testing.T, src string) {
 		defer func() {
@@ -135,14 +152,42 @@ func main() {
 			}
 		}()
 
+		corpusName, mustCompile := compileCorpus[src]
 		goCode, err := Transpile([]byte(src))
 		if err != nil {
+			if mustCompile {
+				t.Fatalf("transpile compile corpus %s: %v", corpusName, err)
+			}
 			return
 		}
 
 		fset := token.NewFileSet()
 		if _, err := parser.ParseFile(fset, "generated.go", goCode, parser.AllErrors); err != nil {
 			t.Fatalf("generated Go should parse for %q: %v\n%s", src, err, goCode)
+		}
+		if mustCompile {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fwcompilecorpus\n\ngo 1.25.0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(goCode), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if corpusName == "resilient_client.fw" {
+				// This source expects getValue from another file in its package.
+				support := "package main\nfunc getValue() *string { v := \"ok\"; return &v }\n"
+				if err := os.WriteFile(filepath.Join(dir, "support.go"), []byte(support), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(dir, "program"), ".")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "GOWORK=off")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("generated Go from %s must compile: %v\n%s\n%s", corpusName, err, out, goCode)
+			}
 		}
 	})
 }

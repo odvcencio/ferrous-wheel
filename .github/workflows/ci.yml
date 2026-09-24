@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GOWORK: 'off'
+
 jobs:
   windows-run:
     name: Windows run process tree
@@ -27,6 +30,25 @@ jobs:
         env:
           GOWORK: 'off'
         run: go test ./cmd/ferrous-wheel -run '^TestWindowsRun' -count=1 -timeout=2m
+
+  automation-contract:
+    name: Automation contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Test CLI exit, streams, paths, and handoff
+        run: go test ./cmd/ferrous-wheel -run '^TestAutomationContract' -count=1 -timeout=5m
 
   test:
     name: Test
@@ -46,9 +68,8 @@ jobs:
       - name: Run tests
         run: go test ./...
 
-      # Race detector disabled: address races before re-enabling.
-      # - name: Run tests with race detector
-      #   run: go test -race ./...
+      - name: Run tests with race detector
+        run: go test -race ./...
 
   fuzz-smoke:
     name: Fuzz smoke
@@ -65,7 +86,7 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run transpile-parsable-Go fuzz smoke
+      - name: Run transpile fuzz smoke and compile corpus
         run: go test -run=^$ -fuzz=FuzzTranspileProducesParsableGo -fuzztime=60s .
 
   lint:
