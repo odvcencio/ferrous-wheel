@@ -18,6 +18,14 @@
   their hashes. File package manifests keep schema 1.
 - Import cycles now report the source file and line before Go compilation.
 
+### Static build policy
+
+- `run`, `build`, and `package` accept `--policy FILE` to check agent-run `.fw`
+  source before staging, compilation, or execution.
+- A denial reports the source file, line, and column. Directory input checks
+  every reachable `.fw` file. File input checks only the named file.
+- Package manifests record the policy file hash as `policySHA256`.
+
 ## v0.7.1 — 2026-09-23
 
 - The README now runs the pinned compiler binary directly. The earlier

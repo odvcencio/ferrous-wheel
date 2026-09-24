@@ -255,18 +255,32 @@ type stagedFWPackage struct {
 	stageDir    string
 	buildDir    string
 	overlayPath string
+	source      []byte
 	cleanup     func()
 }
 
 func stageCLIInput(path string, target gobuild.Context) (*stagedFWPackage, error) {
+	return stageCLIInputWithPolicy(path, target, nil)
+}
+
+func stageCLIInputWithPolicy(path string, target gobuild.Context, check *loadedPolicy) (*stagedFWPackage, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("inspect source: %w", err)
 	}
 	if info.IsDir() {
-		return stageFWPackage(path, target)
+		return stageFWPackageWithPolicy(path, target, check)
 	}
-	goCode, warnings, err := transpileFile(path)
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read source %s: %w", path, err)
+	}
+	if check != nil {
+		if err := check.checkSource(path, source); err != nil {
+			return nil, err
+		}
+	}
+	goCode, warnings, err := transpileSource(path, source)
 	if err != nil {
 		return nil, err
 	}
@@ -275,15 +289,24 @@ func stageCLIInput(path string, target gobuild.Context) (*stagedFWPackage, error
 	if err != nil {
 		return nil, err
 	}
-	return &stagedFWPackage{stageDir: tmpDir, buildDir: tmpDir, cleanup: cleanup}, nil
+	return &stagedFWPackage{stageDir: tmpDir, buildDir: tmpDir, source: source, cleanup: cleanup}, nil
 }
 
 // stageFWPackage stores generated Go outside the source tree. The Go overlay
 // makes files appear beside their .fw sources during package compilation.
 func stageFWPackage(inputDir string, target gobuild.Context) (_ *stagedFWPackage, returnErr error) {
+	return stageFWPackageWithPolicy(inputDir, target, nil)
+}
+
+func stageFWPackageWithPolicy(inputDir string, target gobuild.Context, check *loadedPolicy) (_ *stagedFWPackage, returnErr error) {
 	pkg, err := discoverFWPackage(inputDir, target)
 	if err != nil {
 		return nil, err
+	}
+	if check != nil {
+		if err := check.checkPackage(pkg); err != nil {
+			return nil, err
+		}
 	}
 	stageRoot := ""
 	stagePrefix := "fwrun-*"

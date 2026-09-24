@@ -17,7 +17,7 @@ import (
 	"strings"
 )
 
-const usagePackage = "Usage: ferrous-wheel package --compiler-sha256 HEX --go-version goX.Y.Z --go-sha256 HEX --target OS/ARCH [--target OS/ARCH] --out DIR <file.fw|dir>\n"
+const usagePackage = "Usage: ferrous-wheel package --compiler-sha256 HEX --go-version goX.Y.Z --go-sha256 HEX --target OS/ARCH [--target OS/ARCH] --out DIR [--policy FILE] <file.fw|dir>\n"
 
 var goReleaseVersion = regexp.MustCompile(`^go[0-9]+\.[0-9]+\.[0-9]+$`)
 
@@ -27,6 +27,30 @@ type packageTarget struct {
 }
 
 type packageTargets []packageTarget
+
+type uniquePolicyFlag struct {
+	path *string
+	seen bool
+}
+
+func (flag *uniquePolicyFlag) String() string {
+	if flag.path == nil {
+		return ""
+	}
+	return *flag.path
+}
+
+func (flag *uniquePolicyFlag) Set(value string) error {
+	if flag.seen {
+		return errors.New("duplicate --policy flag")
+	}
+	if value == "" {
+		return errors.New("--policy needs a file path")
+	}
+	flag.seen = true
+	*flag.path = value
+	return nil
+}
 
 func (targets *packageTargets) String() string {
 	parts := make([]string, len(*targets))
@@ -67,6 +91,8 @@ type packageOptions struct {
 	OutputDir      string
 	Targets        packageTargets
 	SourcePath     string
+	PolicyPath     string
+	Policy         *loadedPolicy
 }
 
 type packageArtifact struct {
@@ -88,6 +114,7 @@ type packageManifest struct {
 	SourceSHA256    string              `json:"sourceSHA256"`
 	PackageSHA256   string              `json:"packageSHA256,omitempty"`
 	SourceFiles     []packageSourceFile `json:"sourceFiles,omitempty"`
+	PolicySHA256    string              `json:"policySHA256,omitempty"`
 	ModuleSHA256    string              `json:"moduleSHA256,omitempty"`
 	ModuleSumSHA256 string              `json:"moduleSumSHA256,omitempty"`
 	Artifacts       []packageArtifact   `json:"artifacts"`
@@ -107,6 +134,7 @@ func parsePackageArgs(args []string) (packageOptions, error) {
 	flags.StringVar(&options.GoSHA256, "go-sha256", "", "exact Go executable digest")
 	flags.StringVar(&options.GoBinary, "go", "go", "Go toolchain executable")
 	flags.StringVar(&options.OutputDir, "out", "", "new output directory")
+	flags.Var(&uniquePolicyFlag{path: &options.PolicyPath}, "policy", "optional static build policy")
 	flags.Var(&options.Targets, "target", "target OS/ARCH")
 	if err := flags.Parse(args); err != nil {
 		return options, fmt.Errorf("%w\n%s", err, usagePackage)
@@ -153,10 +181,22 @@ func validatePackageHash(flagName, value string) error {
 func runPackageCLI(args []string, stderr io.Writer) int {
 	options, err := parsePackageArgs(args)
 	if err == nil {
+		options.Policy, err = loadCLIPolicy(options.PolicyPath)
+	}
+	if err == nil && options.Policy != nil {
+		for _, target := range options.Targets {
+			context := gobuild.Default
+			context.GOOS, context.GOARCH = target.GOOS, target.GOARCH
+			if err = options.Policy.checkInput(options.SourcePath, context); err != nil {
+				break
+			}
+		}
+	}
+	if err == nil {
 		err = packageSource(options)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		printCommandError(stderr, err)
 		return 1
 	}
 	return 0
@@ -208,15 +248,12 @@ func packageSource(options packageOptions) (returnErr error) {
 	var source []byte
 	var single *stagedFWPackage
 	if !directoryMode {
-		source, err = os.ReadFile(options.SourcePath)
-		if err != nil {
-			return fmt.Errorf("read source: %w", err)
-		}
-		single, err = stageCLIInput(options.SourcePath, gobuild.Default)
+		single, err = stageCLIInputWithPolicy(options.SourcePath, gobuild.Default, options.Policy)
 		if err != nil {
 			return err
 		}
 		defer single.cleanup()
+		source = single.source
 	}
 	outputDir, err := filepath.Abs(options.OutputDir)
 	if err != nil {
@@ -249,6 +286,9 @@ func packageSource(options packageOptions) (returnErr error) {
 		SourceFile:     filepath.Base(options.SourcePath),
 		SourceSHA256:   bytesSHA256(source),
 	}
+	if options.Policy != nil {
+		manifest.PolicySHA256 = options.Policy.sha256
+	}
 	if directoryMode {
 		manifest.SchemaVersion = 2
 		manifest.SourceSHA256 = ""
@@ -280,7 +320,7 @@ func packageSource(options packageOptions) (returnErr error) {
 		if directoryMode {
 			context := gobuild.Default
 			context.GOOS, context.GOARCH = target.GOOS, target.GOARCH
-			staged, err = stageFWPackage(options.SourcePath, context)
+			staged, err = stageFWPackageWithPolicy(options.SourcePath, context, options.Policy)
 			if err != nil {
 				return err
 			}
