@@ -134,6 +134,40 @@ each reachable `.fw` file in sorted module-relative order. `packageSHA256`
 hashes each path and file hash in that order. The existing `file.fw` package
 form keeps manifest schema 1.
 
+### Static build policy
+
+The unreleased `--policy FILE` option checks agent-run source with `run`,
+`build`, or `package` before compilation or execution. The policy file uses
+JSON. For example:
+
+```json
+{
+  "allowedImports": ["fmt", "os", "m31labs.dev/ferrous-wheel/hostfs"],
+  "denyProcess": true,
+  "denyNetwork": true,
+  "fileRoots": ["/srv/agent-work"]
+}
+```
+
+```bash
+ferrous-wheel run --policy agent-policy.json ./cmd/tool
+ferrous-wheel build --policy agent-policy.json ./cmd/tool -o dist/tool
+```
+
+`package` also accepts `--policy FILE` before its input. It writes the policy
+file's SHA-256 hash as `policySHA256` in the manifest. For a directory input,
+the policy checks each reachable `.fw` file. For a file input, it checks only
+that file. A denied call reports its file, line, and column. The policy path
+is relative to the caller's working directory. `--cwd` changes only the
+program's working directory.
+
+This policy is a build gate, not a sandbox. It checks direct source calls.
+It does not inspect Go files, imported package code, reflection, symlinks, or
+child process effects. A file-root rule rejects dynamic paths. File roots
+use the build host's path rules; `package` rejects them when the target OS
+differs from the build host. See [policy/README.md](policy/README.md) for rule
+details.
+
 ### Version policy
 
 Pin a released compiler version and the Go toolchain in automation. Ferrous
