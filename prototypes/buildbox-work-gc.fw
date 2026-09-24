@@ -1,0 +1,200 @@
+package main
+
+// Linux-only prototype. --root and --proc-root are for isolated tests.
+// Child writers must honor the lock; same-UID child moves defeat confinement.
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"m31labs.dev/ferrous-wheel/hostfs"
+)
+
+func freeKB() (int64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs("/", &stat); err != nil {
+		return 0, err
+	}
+	return int64(stat.Bavail) * int64(stat.Bsize) / 1024, nil
+}
+
+func inUse(procRoot string, root string) (map[string]bool, error) {
+	used := make(map[string]bool)
+	procs, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, proc := range procs {
+		if _, err := strconv.Atoi(proc.Name()); err != nil {
+			continue
+		}
+		cwd, err := os.Readlink(filepath.Join(procRoot, proc.Name(), "cwd"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // The process exited after enumeration.
+			}
+			return nil, fmt.Errorf("cannot inspect process %s cwd: %w", proc.Name(), err)
+		}
+		rel, err := filepath.Rel(root, cwd)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		used[strings.Split(rel, string(os.PathSeparator))[0]] = true
+	}
+	return used, nil
+}
+
+func changedRecently(root *hostfs.Root, name string, cutoff time.Time) (bool, error) {
+	return root.Any(context.Background(), name, hostfs.Limits{MaxDepth: 2, MaxEntries: 10000}, func(entry hostfs.Entry) (bool, error) {
+		stat, ok := entry.Info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return false, fmt.Errorf("cannot read Linux ctime for %s", entry.Path)
+		}
+		ctime := time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+		return !ctime.Before(cutoff), nil
+	})
+}
+
+func diskMB(root *hostfs.Root, name string) (string, error) {
+	bytes, err := root.AllocatedBytes(context.Background(), name, hostfs.Limits{MaxDepth: 64, MaxEntries: 1000000})
+	if err != nil {
+		return "", err
+	}
+	mb := bytes / (1 << 20)
+	if bytes%(1<<20) != 0 {
+		mb++
+	}
+	return strconv.FormatInt(mb, 10), nil
+}
+
+func run(args []string) (status int) {
+	flags := flag.NewFlagSet("buildbox-work-gc", flag.ContinueOnError)
+	root := flags.String("root", "/home/ubuntu/work", "cache root")
+	dryRun := flags.Bool("dry-run", false, "report candidates without deleting")
+	nowUnix := flags.Int64("now-unix", 0, "test clock, Unix seconds")
+	freeOverride := flags.Int64("free-kb", -1, "test free space, KB")
+	procRoot := flags.String("proc-root", "/proc", "process directory for isolated tests")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return 2
+	}
+	absRoot, err := filepath.Abs(*root)
+	if err != nil || filepath.Base(absRoot) != "work" || absRoot == "/" {
+		fmt.Fprintln(os.Stderr, "root must be an absolute work directory")
+		return 2
+	}
+	safeRoot, err := hostfs.OpenReal(absRoot)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "root must be a real directory:", err)
+		return 2
+	}
+	lock, err := safeRoot.Lock(context.Background(), ".buildbox-work-gc.lock")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot lock work root:", errors.Join(err, safeRoot.Close()))
+		return 1
+	}
+	defer func() {
+		if err := errors.Join(lock.Close(), safeRoot.Close()); err != nil {
+			fmt.Fprintln(os.Stderr, "cannot close work root:", err)
+			status = 1
+		}
+	}()
+	entries, err := safeRoot.Children(context.Background(), 100000)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot list work root:", err)
+		return 1
+	}
+	free, err := freeKB()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if *freeOverride >= 0 {
+		free = *freeOverride
+	}
+	snapMin, otherMin := 120, 4320
+	if free < 20*1024*1024 {
+		snapMin, otherMin = 30, 720
+	}
+	now := time.Now()
+	if *nowUnix != 0 {
+		now = time.Unix(*nowUnix, 0)
+	}
+	used, err := inUse(*procRoot, absRoot)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot inspect processes:", err)
+		return 1
+	}
+	removed, failures := 0, 0
+	effects := hostfs.NewEffects(*dryRun)
+	for _, entry := range entries {
+		name := entry.Path
+		if !entry.Info.IsDir() || used[name] {
+			continue
+		}
+		limit := otherMin
+		if strings.HasPrefix(name, "worktree-") {
+			limit = snapMin
+		}
+		cutoff := now.Add(-time.Duration(limit) * time.Minute)
+		marker := name + ".last-used"
+		if markerInfo, statErr := safeRoot.Stat(marker); statErr == nil {
+			if !markerInfo.ModTime().Before(cutoff) {
+				continue
+			}
+		} else if !os.IsNotExist(statErr) {
+			fmt.Fprintf(os.Stderr, "skip %s: cannot read marker: %v\n", name, statErr)
+			failures++
+			continue
+		}
+		recent, err := changedRecently(safeRoot, name, cutoff)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skip %s: %v\n", name, err)
+			failures++
+			continue
+		}
+		if recent {
+			continue
+		}
+		size, err := diskMB(safeRoot, name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skip %s: cannot measure size: %v\n", name, err)
+			failures++
+			continue
+		}
+		if err := safeRoot.RemoveTreeWithSidecars(name, []string{".last-used", ".bundle"}, effects); err != nil {
+			fmt.Fprintf(os.Stderr, "cannot remove %s: %v\n", name, err)
+			failures++
+			continue
+		}
+		if *dryRun {
+			fmt.Printf("would remove %s size=%sMB limit=%dm\n", name, size, limit)
+			continue
+		}
+		removed++
+		fmt.Printf("removed %s size=%sMB limit=%dm\n", name, size, limit)
+	}
+	actualFree, err := freeKB()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot read free space:", err)
+		return 1
+	}
+	fmt.Printf("removed=%d free=%dKB\n", removed, actualFree)
+	if failures > 0 {
+		return 1
+	}
+	return 0
+}
+
+func main() {
+	os.Exit(run(os.Args[1:]))
+}
