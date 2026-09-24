@@ -196,13 +196,14 @@ func (t *fwTranspiler) emitThrottle(n *gotreesitter.Node) string {
 	return b.String()
 }
 
-// retry 3 { body } -> retry loop with exponential backoff
+// retry 3 { body } -> retry loop with exponential backoff and visible failure
 func (t *fwTranspiler) emitRetry(n *gotreesitter.Node) string {
 	countNode := t.childByField(n, "count")
 	if countNode == nil {
 		return t.text(n)
 	}
 	t.needsTime = true
+	t.needsFmt = true
 
 	block := "{}"
 	if blockNode := t.findBlockNode(n); blockNode != nil {
@@ -219,19 +220,69 @@ func (t *fwTranspiler) emitRetry(n *gotreesitter.Node) string {
 	if backoffNode := t.childByField(n, "backoff"); backoffNode != nil {
 		backoff = t.emit(backoffNode)
 	}
+	count := t.emit(countNode)
+	loopCount := "_retryCount"
+	if t.nodeType(countNode) == "int_literal" {
+		loopCount = count
+	}
+	contextNode := t.childByField(n, "context")
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "// retry %s times (delay: %sms, backoff: %sx)\n", t.emit(countNode), delay, backoff)
-	b.WriteString("var _retryErr error\n")
+	fmt.Fprintf(&b, "// retry %s times (delay: %sms, backoff: %sx)\n", count, delay, backoff)
+	b.WriteString("{\nvar _retryErr error\n_retryErr = func() error {\n")
+	fmt.Fprintf(&b, "_retryCount := %s\n", count)
+	b.WriteString("if _retryCount <= 0 { return fmt.Errorf(\"retry requires at least one attempt\") }\n")
 	fmt.Fprintf(&b, "_retryDelay := time.Duration(%s) * time.Millisecond\n", delay)
-	fmt.Fprintf(&b, "for _attempt := 0; _attempt < %s; _attempt++ {\n", t.emit(countNode))
-	fmt.Fprintf(&b, "\t_retryErr = func() error {\n\t\t%s\n\t\treturn nil\n\t}()\n", block)
-	b.WriteString("\tif _retryErr == nil { break }\n")
-	b.WriteString("\ttime.Sleep(_retryDelay)\n")
-	fmt.Fprintf(&b, "\t_retryDelay = time.Duration(float64(_retryDelay) * %s)\n", backoff)
+	fmt.Fprintf(&b, "_retryBackoff := %s\n", backoff)
+	if contextNode != nil {
+		fmt.Fprintf(&b, "_retryCtx := %s\n", t.emit(contextNode))
+	}
+	fmt.Fprintf(&b, "for _attempt := 0; _attempt < %s; _attempt++ {\n", loopCount)
+	if contextNode != nil {
+		b.WriteString("if _ctxErr := _retryCtx.Err(); _ctxErr != nil { return _ctxErr }\n")
+	}
+	fmt.Fprintf(&b, "_retryAttemptErr := func() error {\n%s\nreturn nil\n}()\n", block)
+	b.WriteString("if _retryAttemptErr == nil { return nil }\n")
+	if contextNode != nil {
+		b.WriteString("if _ctxErr := _retryCtx.Err(); _ctxErr != nil { return _ctxErr }\n")
+	}
+	b.WriteString("if _attempt+1 == _retryCount { return fmt.Errorf(\"retry exhausted on attempt %d: %w\", _attempt+1, _retryAttemptErr) }\n")
+	if contextNode != nil {
+		b.WriteString("_retryTimer := time.NewTimer(_retryDelay)\n")
+		b.WriteString("select {\n")
+		b.WriteString("case <-_retryTimer.C:\n")
+		b.WriteString("case <-_retryCtx.Done():\n_retryTimer.Stop()\nreturn _retryCtx.Err()\n")
+		b.WriteString("}\n")
+	} else {
+		b.WriteString("time.Sleep(_retryDelay)\n")
+	}
+	b.WriteString("_retryDelay = time.Duration(float64(_retryDelay) * float64(_retryBackoff))\n")
 	b.WriteString("}\n")
-	b.WriteString("_ = _retryErr")
+	b.WriteString("return fmt.Errorf(\"retry requires at least one attempt\")\n")
+	b.WriteString("}()\n")
+	fmt.Fprintf(&b, "if _retryErr != nil { %s }\n", t.retryFailureStatement(n, "_retryErr"))
+	b.WriteString("}")
 	return b.String()
+}
+
+// retryFailureStatement uses the nearest callable's return contract. A void
+// function literal can sit inside an error-returning function, and it must
+// fail visibly instead of trying to return the outer function's error.
+func (t *fwTranspiler) retryFailureStatement(n *gotreesitter.Node, errName string) string {
+	for cur := n.Parent(); cur != nil; cur = cur.Parent() {
+		switch t.nodeType(cur) {
+		case "retry_block":
+			return "return " + errName
+		case "function_declaration", "method_declaration", "func_literal":
+			if _, ok := t.callableTryTarget(cur); ok {
+				return t.tryReturnStatement(errName)
+			}
+			return "panic(" + errName + ")"
+		case "lambda_expression":
+			return "panic(" + errName + ")"
+		}
+	}
+	return "panic(" + errName + ")"
 }
 
 // breaker "service" { body } -> circuit breaker logic
