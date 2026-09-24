@@ -497,11 +497,13 @@ func Grammar() *GrammarType {
 		// retry 3 { body }
 		// retry 3 { } — defaults: delay=100ms, backoff=exponential
 		// retry 5 delay 500 backoff 2 { } — 500ms initial, 2x multiplier
+		// retry 5 delay 500 context ctx { } — cancel attempts and backoff with ctx
 		g.Define("retry_block", Seq(
 			Str("retry"),
 			Field("count", Sym("_expression")),
 			Optional(Seq(Str("delay"), Field("delay", Sym("_expression")))),
 			Optional(Seq(Str("backoff"), Field("backoff", Sym("_expression")))),
+			Optional(Seq(Str("context"), Field("context", Sym("_expression")))),
 			Sym("block"),
 		))
 

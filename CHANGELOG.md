@@ -16,6 +16,14 @@
   for termination. It stops remaining descendants when the program exits and
   removes the staging directory.
 
+### Retry
+
+- `retry` now returns the last error when it exhausts all attempts in a
+  function with an error result. It panics with that error in a function
+  without an error result. A count of zero fails before the body runs.
+- `retry` no longer waits after its last attempt. Add `context ctx` to stop
+  before an attempt or during backoff.
+
 ## v0.6.0 — 2026-07-17
 
 Stabilization pass: seven parser/transpiler correctness bugs found by an
