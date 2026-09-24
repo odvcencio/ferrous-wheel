@@ -100,11 +100,15 @@ func runCLI(args []string, stderr io.Writer) int {
 }
 
 type exitStatusError struct {
-	code  int
-	label string
+	code   int
+	label  string
+	detail string
 }
 
 func (e *exitStatusError) Error() string {
+	if e.detail != "" {
+		return fmt.Sprintf("%s exited with status %d; %s", e.label, e.code, e.detail)
+	}
 	return fmt.Sprintf("%s exited with status %d", e.label, e.code)
 }
 
@@ -265,7 +269,6 @@ func writeTempProject(goCode, sourcePath string) (string, func(), error) {
 					if err := os.RemoveAll(tmpDir); err != nil {
 						fmt.Fprintf(os.Stderr, "error: remove staging directory: %v\n", err)
 					}
-					_ = os.Remove(stageRoot) // Another run may still use this directory.
 				}
 				if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(goCode), 0644); err != nil {
 					cleanup()
@@ -366,13 +369,25 @@ func runScript(path, cwd string, scriptArgs []string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	if err, _ := runWithSignals(cmd, signals); err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return &exitStatusError{code: processExitCode(exit), label: "program"}
-		}
-		return fmt.Errorf("start program: %w", err)
+		return scriptRunError(err)
 	}
 	return nil
+}
+
+func scriptRunError(err error) error {
+	var control *processControlError
+	if errors.As(err, &control) {
+		var exit *exec.ExitError
+		if errors.As(control.processErr, &exit) {
+			return &exitStatusError{code: processExitCode(exit), label: "program", detail: control.controlErr.Error()}
+		}
+		return fmt.Errorf("run program: %w", control)
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return &exitStatusError{code: processExitCode(exit), label: "program"}
+	}
+	return fmt.Errorf("start program: %w", err)
 }
 
 // build transpiles a .fw file and compiles it to a native binary.

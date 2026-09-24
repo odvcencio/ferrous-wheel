@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	ferrouswheel "m31labs.dev/ferrous-wheel"
 	"github.com/stretchr/testify/assert"
+	ferrouswheel "m31labs.dev/ferrous-wheel"
 
 	// =============================================================================
 	// TYPE SYSTEM

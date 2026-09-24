@@ -11,8 +11,10 @@
   program creates an explicit path if they used the temporary directory.
 - `run` now returns the program's exit code. It prints one error line when
   the program exits with a nonzero code.
-- `run` forwards SIGINT and SIGTERM to the program's process group. It removes
-  the staging directory after the program stops.
+- On Unix, `run` forwards SIGINT and SIGTERM to the program's process group.
+  On Windows, it sends console break for interrupt and ends the process job
+  for termination. It stops remaining descendants when the program exits and
+  removes the staging directory.
 
 ## v0.6.0 — 2026-07-17
 
