@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	gobuild "go/build"
 	"io"
 	"os"
 	"os/exec"
@@ -14,11 +15,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	ferrouswheel "m31labs.dev/ferrous-wheel"
 )
 
-const usagePackage = "Usage: ferrous-wheel package --compiler-sha256 HEX --go-version goX.Y.Z --go-sha256 HEX --target OS/ARCH [--target OS/ARCH] --out DIR <file.fw>\n"
+const usagePackage = "Usage: ferrous-wheel package --compiler-sha256 HEX --go-version goX.Y.Z --go-sha256 HEX --target OS/ARCH [--target OS/ARCH] --out DIR <file.fw|dir>\n"
 
 var goReleaseVersion = regexp.MustCompile(`^go[0-9]+\.[0-9]+\.[0-9]+$`)
 
@@ -81,15 +80,22 @@ type packageArtifact struct {
 }
 
 type packageManifest struct {
-	SchemaVersion   int               `json:"schemaVersion"`
-	CompilerSHA256  string            `json:"compilerSHA256"`
-	GoVersion       string            `json:"goVersion"`
-	GoBinarySHA256  string            `json:"goBinarySHA256"`
-	SourceFile      string            `json:"sourceFile"`
-	SourceSHA256    string            `json:"sourceSHA256"`
-	ModuleSHA256    string            `json:"moduleSHA256,omitempty"`
-	ModuleSumSHA256 string            `json:"moduleSumSHA256,omitempty"`
-	Artifacts       []packageArtifact `json:"artifacts"`
+	SchemaVersion   int                 `json:"schemaVersion"`
+	CompilerSHA256  string              `json:"compilerSHA256"`
+	GoVersion       string              `json:"goVersion"`
+	GoBinarySHA256  string              `json:"goBinarySHA256"`
+	SourceFile      string              `json:"sourceFile"`
+	SourceSHA256    string              `json:"sourceSHA256"`
+	PackageSHA256   string              `json:"packageSHA256,omitempty"`
+	SourceFiles     []packageSourceFile `json:"sourceFiles,omitempty"`
+	ModuleSHA256    string              `json:"moduleSHA256,omitempty"`
+	ModuleSumSHA256 string              `json:"moduleSumSHA256,omitempty"`
+	Artifacts       []packageArtifact   `json:"artifacts"`
+}
+
+type packageSourceFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 func parsePackageArgs(args []string) (packageOptions, error) {
@@ -105,11 +111,17 @@ func parsePackageArgs(args []string) (packageOptions, error) {
 	if err := flags.Parse(args); err != nil {
 		return options, fmt.Errorf("%w\n%s", err, usagePackage)
 	}
-	if flags.NArg() != 1 || options.OutputDir == "" || len(options.Targets) == 0 ||
-		!strings.HasSuffix(flags.Arg(0), ".fw") || filepath.Base(flags.Arg(0)) == ".fw" {
+	if flags.NArg() != 1 || options.OutputDir == "" || len(options.Targets) == 0 {
 		return options, errors.New(usagePackage)
 	}
 	options.SourcePath = flags.Arg(0)
+	if info, err := os.Stat(options.SourcePath); err == nil {
+		if !info.IsDir() && (!strings.HasSuffix(options.SourcePath, ".fw") || filepath.Base(options.SourcePath) == ".fw") {
+			return options, errors.New(usagePackage)
+		}
+	} else if !strings.HasSuffix(options.SourcePath, ".fw") {
+		return options, errors.New(usagePackage)
+	}
 	if err := validatePackageHash("--compiler-sha256", options.CompilerSHA256); err != nil {
 		return options, err
 	}
@@ -188,27 +200,24 @@ func packageSource(options packageOptions) (returnErr error) {
 		return fmt.Errorf("Go version mismatch: requested %s, got %q", options.GoVersion, strings.TrimSpace(string(versionOutput)))
 	}
 
-	source, err := os.ReadFile(options.SourcePath)
+	inputInfo, err := os.Stat(options.SourcePath)
 	if err != nil {
-		return fmt.Errorf("read source: %w", err)
+		return fmt.Errorf("inspect source: %w", err)
 	}
-	if lintFile(options.SourcePath, source, os.Stderr) {
-		return errors.New("package: source has lint errors")
+	directoryMode := inputInfo.IsDir()
+	var source []byte
+	var single *stagedFWPackage
+	if !directoryMode {
+		source, err = os.ReadFile(options.SourcePath)
+		if err != nil {
+			return fmt.Errorf("read source: %w", err)
+		}
+		single, err = stageCLIInput(options.SourcePath, gobuild.Default)
+		if err != nil {
+			return err
+		}
+		defer single.cleanup()
 	}
-	goCode, warnings, err := ferrouswheel.TranspileWithOptions(source, ferrouswheel.TranspileOptions{
-		SourceFile: filepath.Base(options.SourcePath),
-		LintRan:    true,
-	})
-	if err != nil {
-		return fmt.Errorf("transpile source: %w", err)
-	}
-	printWarnings(os.Stderr, warnings)
-	tmpGoDir, cleanupGo, err := writeTempProject(generatedHeader+goCode, options.SourcePath)
-	if err != nil {
-		return err
-	}
-	defer cleanupGo()
-
 	outputDir, err := filepath.Abs(options.OutputDir)
 	if err != nil {
 		return fmt.Errorf("resolve output directory: %w", err)
@@ -240,11 +249,19 @@ func packageSource(options packageOptions) (returnErr error) {
 		SourceFile:     filepath.Base(options.SourcePath),
 		SourceSHA256:   bytesSHA256(source),
 	}
+	if directoryMode {
+		manifest.SchemaVersion = 2
+		manifest.SourceSHA256 = ""
+	}
 	absSource, err := filepath.Abs(options.SourcePath)
 	if err != nil {
 		return fmt.Errorf("resolve source: %w", err)
 	}
-	if moduleRoot := findParentGoMod(filepath.Dir(absSource)); moduleRoot != "" {
+	moduleStart := filepath.Dir(absSource)
+	if directoryMode {
+		moduleStart = absSource
+	}
+	if moduleRoot := findParentGoMod(moduleStart); moduleRoot != "" {
 		manifest.ModuleSHA256, err = fileSHA256(filepath.Join(moduleRoot, "go.mod"))
 		if err != nil {
 			return fmt.Errorf("hash go.mod: %w", err)
@@ -257,20 +274,51 @@ func packageSource(options packageOptions) (returnErr error) {
 	}
 
 	base := strings.TrimSuffix(filepath.Base(options.SourcePath), ".fw")
+	sourceHashes := make(map[string]string)
 	for _, target := range options.Targets {
+		staged := single
+		if directoryMode {
+			context := gobuild.Default
+			context.GOOS, context.GOARCH = target.GOOS, target.GOARCH
+			staged, err = stageFWPackage(options.SourcePath, context)
+			if err != nil {
+				return err
+			}
+			for _, file := range staged.files {
+				digest := bytesSHA256(file.source)
+				if previous, ok := sourceHashes[file.relative]; ok && previous != digest {
+					staged.cleanup()
+					return fmt.Errorf("package source changed between targets: %s", file.relative)
+				}
+				sourceHashes[file.relative] = digest
+			}
+		}
 		name := base + "-" + target.GOOS + "-" + target.GOARCH
 		if target.GOOS == "windows" {
 			name += ".exe"
 		}
 		binaryPath := filepath.Join(stageDir, name)
-		build := exec.Command(goBinary, "build", "-trimpath", "-buildvcs=false", "-mod=readonly",
-			"-ldflags=-buildid=", "-o", binaryPath, filepath.Join(tmpGoDir, "main.go"))
-		build.Dir = tmpGoDir
+		buildArgs := []string{"build", "-trimpath", "-buildvcs=false", "-mod=readonly"}
+		buildInput := filepath.Join(staged.stageDir, "main.go")
+		if directoryMode {
+			buildInput = "."
+			if staged.modulePath == "" {
+				buildArgs = buildArgs[:len(buildArgs)-1]
+			}
+			buildArgs = append(buildArgs, "-overlay="+staged.overlayPath)
+		}
+		buildArgs = append(buildArgs, "-ldflags=-buildid=", "-o", binaryPath, buildInput)
+		build := exec.Command(goBinary, buildArgs...)
+		build.Dir = staged.buildDir
 		build.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOENV=off", "GOFLAGS=",
 			"CGO_ENABLED=0", "GOEXPERIMENT=", "GOOS="+target.GOOS, "GOARCH="+target.GOARCH,
 			"GOAMD64=v1", "GOARM=7")
-		if output, err := build.CombinedOutput(); err != nil {
-			return fmt.Errorf("go build %s/%s: %w\n%s", target.GOOS, target.GOARCH, err, strings.TrimSpace(string(output)))
+		output, buildErr := build.CombinedOutput()
+		if directoryMode {
+			staged.cleanup()
+		}
+		if buildErr != nil {
+			return fmt.Errorf("go build %s/%s: %w\n%s", target.GOOS, target.GOARCH, buildErr, strings.TrimSpace(string(output)))
 		}
 		info, err := os.Stat(binaryPath)
 		if err != nil {
@@ -284,6 +332,10 @@ func packageSource(options packageOptions) (returnErr error) {
 			File: name, GOOS: target.GOOS, GOARCH: target.GOARCH,
 			SHA256: hash, Size: info.Size(), CGOEnabled: false, Static: target.GOOS == "linux",
 		})
+	}
+	if directoryMode {
+		manifest.SourceFiles, manifest.PackageSHA256 = sourceManifest(sourceHashes)
+		manifest.SourceSHA256 = manifest.PackageSHA256
 	}
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {

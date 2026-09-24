@@ -575,8 +575,10 @@ func isFWWhitespaceOnly(b []byte) bool {
 // Transpile converts .fw source to valid Go code.
 // TranspileOptions configures the transpilation process.
 type TranspileOptions struct {
-	SourceFile string // original .fw filename for //line directives
-	LintRan    bool   // true if lint already ran; skip duplicate checks (e.g., if-expr else)
+	SourceFile     string // original .fw filename for //line directives
+	LintRan        bool   // true if lint already ran; skip duplicate checks (e.g., if-expr else)
+	OmitResultType bool   // package build provides Result and its constructors in another file
+	OmitOptionType bool   // package build provides Option and its constructors in another file
 }
 
 // Warning is a non-fatal issue encountered during transpilation.
@@ -687,7 +689,7 @@ func TranspileWithOptions(source []byte, opts TranspileOptions) (string, []Warni
 	t.detectGenericTypes(result)
 
 	result = t.injectImports(result)
-	result = t.injectGenericTypes(result)
+	result = t.injectGenericTypes(result, opts)
 	result = t.injectSupportCode(result)
 	if _, err := goparser.ParseFile(token.NewFileSet(), "generated.go", result, 0); err != nil {
 		if errSourceLabel != "" {

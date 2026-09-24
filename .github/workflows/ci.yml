@@ -50,6 +50,10 @@ jobs:
       - name: Test CLI exit, streams, paths, and handoff
         run: go test ./cmd/ferrous-wheel -run '^TestAutomationContract' -count=1 -timeout=5m
 
+      # Rank 9: run the directory package contract on every supported host.
+      - name: Test multi-file package and import contracts
+        run: go test ./cmd/ferrous-wheel -run '^(TestMultiFile|TestSingleFileBuildDoesNotIncludeSiblingScripts|TestDirectoryModeRejectsGeneratedGoCollision)' -count=1 -timeout=8m
+
   test:
     name: Test
     runs-on: ubuntu-latest
