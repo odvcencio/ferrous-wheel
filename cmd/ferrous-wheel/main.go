@@ -356,6 +356,9 @@ func runScript(path, cwd string, scriptArgs []string) error {
 	buildArgs = append(buildArgs, "-o", bin, ".")
 	buildCmd := exec.Command("go", buildArgs...)
 	buildCmd.Dir = staged.buildDir
+	if staged.fwSourcePackage != nil {
+		buildCmd.Env = append(os.Environ(), "GOWORK=off")
+	}
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err, sig := runWithSignals(buildCmd, signals); err != nil || sig != nil {
@@ -429,6 +432,9 @@ func build(path, output string) error {
 	buildArgs = append(buildArgs, "-o", output, ".")
 	cmd := exec.Command("go", buildArgs...)
 	cmd.Dir = staged.buildDir
+	if staged.fwSourcePackage != nil {
+		cmd.Env = append(os.Environ(), "GOWORK=off")
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

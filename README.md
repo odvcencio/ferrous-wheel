@@ -121,7 +121,8 @@ ferrous-wheel build ./cmd/tool -o dist/tool
 ```
 
 The compiler follows imports within the nearest Go module and builds local
-`.fw` packages with their Go packages. It uses the source directory for Go
+`.fw` packages with their Go packages. Directory builds ignore a caller's
+`go.work` file. The compiler uses the source directory for Go
 imports and `go:embed` paths. It reports an import cycle with a source file
 and line. Without a `go.mod`, it builds the input directory in a temporary
 module and includes adjacent assets. `run` still starts the program in the

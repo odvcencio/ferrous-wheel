@@ -78,6 +78,23 @@ func TestMultiFilePackageRunBuildAndAssets(t *testing.T) {
 	}
 }
 
+func TestDirectoryModeUsesNearestModuleDespiteCallerWorkspace(t *testing.T) {
+	root, _, appDir := multiFileContract(t)
+	t.Setenv("GOWORK", filepath.Join(root, "missing.work"))
+	output, stderr, err := captureOutput(t, func() error { return runScript(appDir, appDir, nil) })
+	if err != nil || output != "shared-library|main-helper|embedded-asset|runtime-asset\n" {
+		t.Fatalf("directory run with caller workspace: output %q, stderr %q, error %v", output, stderr, err)
+	}
+	bin := filepath.Join(t.TempDir(), "tool")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	_, stderr, err = captureOutput(t, func() error { return build(appDir, bin) })
+	if err != nil {
+		t.Fatalf("directory build with caller workspace: stderr %q, error %v", stderr, err)
+	}
+}
+
 func TestMultiFilePackageManifestHashesAllSources(t *testing.T) {
 	if (runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows") ||
 		(runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
