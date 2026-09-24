@@ -690,6 +690,7 @@ func Grammar() *GrammarType {
 		AddConflict(g, "ternary_expression", "safe_navigation")
 		AddConflict(g, "ternary_expression", "null_coalesce")
 		AddConflict(g, "ternary_expression", "error_propagation")
+		AddConflict(g, "ternary_expression", "binary_expression")
 
 		// error_propagation ? vs safe_navigation ?. vs null_coalesce ??
 		AddConflict(g, "error_propagation", "safe_navigation")

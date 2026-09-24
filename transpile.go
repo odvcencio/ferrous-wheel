@@ -22,7 +22,7 @@ func GetFWLanguage() (*gotreesitter.Language, error) {
 
 func getFWLanguage() (*gotreesitter.Language, error) {
 	fwLangOnce.Do(func() {
-		fwLangCached, fwLangErr = GenerateLanguage(Grammar())
+		fwLangCached, fwLangErr = loadVerifiedFWLanguage(fwGrammarBlob)
 	})
 	return fwLangCached, fwLangErr
 }
