@@ -14,13 +14,16 @@ Ferrous Wheel is a Rust-inspired syntax layer that transpiles to idiomatic Go. I
 
 ## Requirements
 
-The `ferrous-wheel` binary must be on your `PATH`. Install it with:
+The `ferrous-wheel` binary must be on your `PATH`. Use Go 1.25.0 or newer to
+install it. The Go module path is `m31labs.dev/ferrous-wheel`. Pin the release:
 
 ```sh
-go install github.com/odvcencio/ferrous-wheel@latest
+GOWORK=off go install m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.0
 ```
 
 Or download a release binary from the [main repository](https://github.com/odvcencio/ferrous-wheel).
+The extension starts this binary with `ferrous-wheel lsp`. Set
+`ferrous-wheel.serverPath` if the binary is not on your `PATH`.
 
 ## Settings
 

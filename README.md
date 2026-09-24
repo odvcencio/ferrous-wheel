@@ -45,15 +45,36 @@ func main() {
 
 ## Install
 
+Use Go 1.25.0 or newer. The Go module path is `m31labs.dev/ferrous-wheel`.
+Pin the Ferrous Wheel release in build scripts. This example uses v0.7.0:
+
 ```bash
-go install github.com/odvcencio/ferrous-wheel/cmd/ferrous-wheel@latest
+GOWORK=off go install m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.0
 ```
 
+The pinned compiler can build or run a script:
+
+```bash
+GOWORK=off go run m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.0 build myfile.fw -o dist/myapp
+./dist/myapp "two words"
+GOWORK=off go run m31labs.dev/ferrous-wheel/cmd/ferrous-wheel@v0.7.0 run myfile.fw -- "two words"
+```
+
+The v0.6.0 `run` command accepts no program arguments, starts the program in
+a staging directory, and reports exit code 1 for any nonzero program exit.
+For scripts that used v0.6.0, check any relative paths when you move to
+v0.7.0. The new `run` command starts in the caller's working directory unless
+you set `--cwd`. It passes arguments after `--` and returns the program's
+exit code.
+
 ## Usage
+
+These commands require v0.7.0 or newer.
 
 ```bash
 ferrous-wheel emit  myfile.fw                      # transpile to Go on stdout
 ferrous-wheel run   myfile.fw                      # transpile + execute
+ferrous-wheel run --cwd ./work myfile.fw -- "two words"
 ferrous-wheel build myfile.fw -o dist/myapp        # compile a native binary
 ferrous-wheel fmt   myfile.fw                      # format .fw source (stdout)
 ferrous-wheel fmt   -w myfile.fw                   # format in-place
@@ -62,7 +83,13 @@ ferrous-wheel lint  myfile.fw                      # run lint rules
 ferrous-wheel lsp                                  # start language server
 ```
 
-`emit` writes standard Go source to stdout with a generated-file header. `build` accepts `-o` for the output path. `fmt` formats `.fw` source files (tabs, operator spacing, match arm alignment). `lint` runs 19 built-in rules and reports diagnostics — errors block transpilation, warnings don't.
+`emit` writes standard Go source to stdout with a generated-file header. `run`
+uses the caller's working directory by default, or the directory set by
+`--cwd`. It passes each argument after `--` to the program and returns the
+program's exit code. `build` accepts `-o` for the output path. `fmt` formats
+`.fw` source files (tabs, operator spacing, match arm alignment). `lint` runs
+19 built-in rules and reports diagnostics. Errors block transpilation;
+warnings do not.
 
 ---
 
@@ -531,6 +558,16 @@ for req in requests {
 ```
 
 ### Retry with exponential backoff
+
+`retry N [delay MS] [backoff FACTOR] [context ctx] { ... }` makes at most
+`N` attempts. The delay starts at 100 ms, and the backoff factor defaults to 2.
+Return an error from the block to try again.
+
+- If all attempts fail, `retry` wraps the last error. It returns that error
+  from a function with an error result, or panics in a function without one.
+  It does not sleep after the last attempt.
+- `context ctx` stops retry before an attempt or during backoff. Pass `ctx` to
+  blocking calls in the block if they must stop during an attempt.
 
 ```fw
 retry 5 {

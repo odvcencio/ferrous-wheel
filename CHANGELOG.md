@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.7.0 — 2026-09-23
+
 ### Run command
 
 - `run` now passes arguments after `--` to the program without changing them.
