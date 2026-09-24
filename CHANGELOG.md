@@ -21,6 +21,12 @@
   path and PowerShell handoff contract, and Go compilation checks for the fuzz
   corpus.
 
+### Core diagnostics
+
+- Improve type inference for multi-name declarations, imports, constants,
+  selectors, and recursive types. Add contract tests for these cases and for
+  lint and concurrent rewrite diagnostics.
+
 ### Reproducible packages
 
 - Add `package` with exact compiler and Go executable checksums and a Go
