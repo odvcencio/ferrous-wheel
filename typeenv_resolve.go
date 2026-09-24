@@ -326,6 +326,9 @@ func (e *TypeEnv) Resolve(n *gotreesitter.Node, lang *gotreesitter.Language, src
 		iterableNode := field("iterable")
 		varNode := field("var")
 		exprNode := field("expression")
+		if exprNode == nil {
+			exprNode = field("expr")
+		}
 		if iterableNode == nil || varNode == nil || exprNode == nil {
 			return nil, fmt.Errorf("list comprehension incomplete")
 		}

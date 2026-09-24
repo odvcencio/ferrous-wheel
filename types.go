@@ -280,6 +280,28 @@ func TypeEquals(a, b Type) bool {
 			}
 		}
 		return true
+	case *TupleType:
+		b, ok := b.(*TupleType)
+		if !ok || len(a.Elems) != len(b.Elems) {
+			return false
+		}
+		for i := range a.Elems {
+			if !TypeEquals(a.Elems[i], b.Elems[i]) {
+				return false
+			}
+		}
+		return true
+	case *GenericType:
+		b, ok := b.(*GenericType)
+		if !ok || a.Name != b.Name || len(a.TypeParams) != len(b.TypeParams) {
+			return false
+		}
+		for i := range a.TypeParams {
+			if !TypeEquals(a.TypeParams[i], b.TypeParams[i]) {
+				return false
+			}
+		}
+		return true
 	case *NamedType:
 		b, ok := b.(*NamedType)
 		return ok && a.Pkg == b.Pkg && a.Name == b.Name
