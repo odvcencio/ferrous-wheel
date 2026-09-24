@@ -55,7 +55,13 @@ func discoverFWPackage(inputDir string, target gobuild.Context) (*fwSourcePackag
 	if !info.IsDir() {
 		return nil, fmt.Errorf("package input is not a directory: %s", inputDir)
 	}
-	pkg := &fwSourcePackage{dir: abs}
+	// The Go command resolves its working directory before it looks up overlay
+	// paths. Use the same physical paths for the package and its module root.
+	realDir, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve package directory: %w", err)
+	}
+	pkg := &fwSourcePackage{dir: realDir}
 	pkg.moduleRoot = findParentGoMod(pkg.dir)
 	if pkg.moduleRoot != "" {
 		data, err := os.ReadFile(filepath.Join(pkg.moduleRoot, "go.mod"))
@@ -73,6 +79,7 @@ func discoverFWPackage(inputDir string, target gobuild.Context) (*fwSourcePackag
 	if err != nil {
 		return nil, fmt.Errorf("resolve module root: %w", err)
 	}
+	pkg.moduleRoot = realRoot
 	state := make(map[string]uint8)
 	var stack []string
 	var visit func(string) error

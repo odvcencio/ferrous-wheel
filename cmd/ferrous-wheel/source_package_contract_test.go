@@ -78,6 +78,38 @@ func TestMultiFilePackageRunBuildAndAssets(t *testing.T) {
 	}
 }
 
+func TestDirectoryModeCanonicalizesSymlinkedPrefixForGoOverlay(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlink creation may require Windows developer mode")
+	}
+	root, _, _ := multiFileContract(t)
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "linked-module")
+	if err := os.Symlink(realRoot, alias); err != nil {
+		t.Fatal(err)
+	}
+	appDir := filepath.Join(alias, "app")
+	const want = "shared-library|main-helper|embedded-asset|runtime-asset\n"
+	output, stderr, err := captureOutput(t, func() error { return runScript(appDir, appDir, nil) })
+	if err != nil || output != want {
+		t.Fatalf("run through symlinked prefix: output %q, stderr %q, error %v", output, stderr, err)
+	}
+	bin := filepath.Join(t.TempDir(), "multi")
+	_, stderr, err = captureOutput(t, func() error { return build(appDir, bin) })
+	if err != nil {
+		t.Fatalf("build through symlinked prefix: stderr %q, error %v", stderr, err)
+	}
+	packageDir := filepath.Join(t.TempDir(), "package")
+	args := packageArgs(t, packageDir, appDir)
+	args[9] = runtime.GOOS + "/" + runtime.GOARCH
+	if code := runCLI(args, os.Stderr); code != 0 {
+		t.Fatalf("package through symlinked prefix exited %d", code)
+	}
+}
+
 func TestDirectoryModeUsesNearestModuleDespiteCallerWorkspace(t *testing.T) {
 	root, _, appDir := multiFileContract(t)
 	t.Setenv("GOWORK", filepath.Join(root, "missing.work"))
