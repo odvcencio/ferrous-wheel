@@ -279,13 +279,12 @@ func stageFWPackage(inputDir string, target gobuild.Context) (_ *stagedFWPackage
 		return nil, err
 	}
 	stageRoot := ""
+	stagePrefix := "fwrun-*"
 	if pkg.modulePath != "" {
-		stageRoot = filepath.Join(pkg.moduleRoot, ".ferrous-wheel-build")
-		if err := os.MkdirAll(stageRoot, 0o755); err != nil {
-			return nil, fmt.Errorf("create stage root: %w", err)
-		}
+		stageRoot = pkg.moduleRoot
+		stagePrefix = ".ferrous-wheel-build-*"
 	}
-	stageDir, err := os.MkdirTemp(stageRoot, "fwrun-*")
+	stageDir, err := os.MkdirTemp(stageRoot, stagePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create stage directory: %w", err)
 	}

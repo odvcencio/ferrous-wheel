@@ -72,7 +72,7 @@ func TestMultiFilePackageRunBuildAndAssets(t *testing.T) {
 	if err != nil || string(output) != want {
 		t.Fatalf("built package: output %q, error %v", output, err)
 	}
-	stages, err := filepath.Glob(filepath.Join(root, ".ferrous-wheel-build", "fwrun-*"))
+	stages, err := filepath.Glob(filepath.Join(root, ".ferrous-wheel-build*"))
 	if err != nil || len(stages) != 0 {
 		t.Fatalf("staging after run/build: %v, %v", stages, err)
 	}
@@ -191,6 +191,10 @@ func TestDirectoryModeRejectsGeneratedGoCollision(t *testing.T) {
 	_, stderr, err := captureOutput(t, func() error { return build(filepath.Join(root, "app"), filepath.Join(root, "out")) })
 	if err == nil || !strings.Contains(err.Error(), "main.fw") || !strings.Contains(err.Error(), "main.fw.go") || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("collision diagnostic = %v, stderr = %q", err, stderr)
+	}
+	stages, err := filepath.Glob(filepath.Join(root, ".ferrous-wheel-build*"))
+	if err != nil || len(stages) != 0 {
+		t.Fatalf("staging after rejected package = %v, %v", stages, err)
 	}
 }
 
