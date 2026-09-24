@@ -158,6 +158,9 @@ func TestCheckFileRootChecksBothRenamePathsAndHelpers(t *testing.T) {
 		call       string
 	}{
 		{"rename destination", `"os"`, fmt.Sprintf("os.Rename(%q, %q)", inside, outside)},
+		{"readlink", `"os"`, fmt.Sprintf("os.Readlink(%q)", outside)},
+		{"copyfs destination", `"os"`, fmt.Sprintf("os.CopyFS(%q, nil)", outside)},
+		{"open in root", `"os"`, fmt.Sprintf("os.OpenInRoot(%q, \"file\")", outside)},
 		{"filepath walk", `"path/filepath"`, fmt.Sprintf("filepath.Walk(%q, nil)", outside)},
 		{"hostfs root", `"m31labs.dev/ferrous-wheel/hostfs"`, fmt.Sprintf("hostfs.Open(%q)", outside)},
 		{"ops append", `"m31labs.dev/ferrous-wheel/ops"`, fmt.Sprintf("ops.AppendFile(%q, nil, 0600)", outside)},

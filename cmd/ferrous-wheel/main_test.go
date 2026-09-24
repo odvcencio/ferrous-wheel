@@ -471,3 +471,38 @@ func TestRunCLIErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildArgsOutputFlagOrder(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantPath   string
+		wantOutput string
+		wantPolicy string
+		wantError  string
+	}{
+		{name: "output before source", args: []string{"-o", "tool", "main.fw"}, wantPath: "main.fw", wantOutput: "tool"},
+		{name: "output after source", args: []string{"main.fw", "-o", "tool"}, wantPath: "main.fw", wantOutput: "tool"},
+		{name: "policy and output before source", args: []string{"--policy", "rules.json", "-o", "tool", "main.fw"}, wantPath: "main.fw", wantOutput: "tool", wantPolicy: "rules.json"},
+		{name: "output then policy before source", args: []string{"-o", "tool", "--policy=rules.json", "main.fw"}, wantPath: "main.fw", wantOutput: "tool", wantPolicy: "rules.json"},
+		{name: "missing source", args: []string{"-o", "tool"}, wantError: "Usage: ferrous-wheel build"},
+		{name: "missing output", args: []string{"-o"}, wantError: "missing output path after -o"},
+		{name: "duplicate output", args: []string{"-o", "one", "main.fw", "-o", "two"}, wantError: "duplicate -o flag"},
+		{name: "extra source", args: []string{"-o", "tool", "main.fw", "other.fw"}, wantError: "unexpected build argument: other.fw"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, output, policyPath, err := buildArgs(tt.args)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("buildArgs(%q) error = %v, want %q", tt.args, err, tt.wantError)
+				}
+				return
+			}
+			if err != nil || path != tt.wantPath || output != tt.wantOutput || policyPath != tt.wantPolicy {
+				t.Fatalf("buildArgs(%q) = (%q, %q, %q, %v), want (%q, %q, %q, nil)",
+					tt.args, path, output, policyPath, err, tt.wantPath, tt.wantOutput, tt.wantPolicy)
+			}
+		})
+	}
+}

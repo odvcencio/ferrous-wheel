@@ -195,9 +195,6 @@ func buildArgs(args []string) (path, output, policyPath string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-o":
-			if path == "" {
-				return "", "", "", cliUsageError(usageBuild)
-			}
 			if output != "" {
 				return "", "", "", cliUsageError("duplicate -o flag\n" + usageBuild)
 			}

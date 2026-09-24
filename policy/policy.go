@@ -398,7 +398,7 @@ func filePathArgs(importPath, method string) ([]int, bool) {
 	switch importPath {
 	case "os":
 		switch method {
-		case "Open", "OpenFile", "OpenRoot", "ReadFile", "WriteFile", "Create", "CreateTemp",
+		case "Open", "OpenFile", "OpenRoot", "OpenInRoot", "ReadFile", "Readlink", "WriteFile", "Create", "CreateTemp", "CopyFS",
 			"Mkdir", "MkdirAll", "MkdirTemp", "Remove", "RemoveAll", "Stat", "Lstat", "ReadDir",
 			"Chdir", "Chmod", "Chown", "Lchown", "Chtimes", "Truncate", "DirFS":
 			return []int{0}, true
