@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-func TestBuildboxWorkGCContract(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "buildbox-work-gc")
-	build := exec.Command("go", "run", "../cmd/ferrous-wheel", "build", "buildbox-work-gc.fw", "-o", bin)
+func TestWorkdirGCContract(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "workdir-gc")
+	build := exec.Command("go", "run", "../cmd/ferrous-wheel", "build", "workdir-gc.fw", "-o", bin)
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build prototype: %v\n%s", err, out)

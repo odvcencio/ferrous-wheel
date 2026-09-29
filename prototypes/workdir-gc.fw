@@ -75,7 +75,7 @@ func diskMB(root *hostfs.Root, name string) (string, error) {
 }
 
 func run(args []string) (status int) {
-	flags := flag.NewFlagSet("buildbox-work-gc", flag.ContinueOnError)
+	flags := flag.NewFlagSet("workdir-gc", flag.ContinueOnError)
 	root := flags.String("root", "/home/ubuntu/work", "cache root")
 	dryRun := flags.Bool("dry-run", false, "report candidates without deleting")
 	nowUnix := flags.Int64("now-unix", 0, "test clock, Unix seconds")
@@ -97,7 +97,7 @@ func run(args []string) (status int) {
 		fmt.Fprintln(os.Stderr, "root must be a real directory:", err)
 		return 2
 	}
-	lock, err := safeRoot.Lock(context.Background(), ".buildbox-work-gc.lock")
+	lock, err := safeRoot.Lock(context.Background(), ".workdir-gc.lock")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot lock work root:", errors.Join(err, safeRoot.Close()))
 		return 1
