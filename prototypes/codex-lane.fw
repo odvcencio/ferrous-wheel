@@ -1,6 +1,6 @@
 package main
 
-// Prototype for nightwatch/codex-lane.sh. Build to a binary before invoking.
+// Prototype for a lane-launcher shell script. Build to a binary before invoking.
 import (
 	"context"
 	"fmt"
@@ -48,9 +48,14 @@ func run(args []string) int {
 	}
 	state := os.Getenv("FW_CODEX_LANE_STATE_DIR")
 	if state == "" {
-		state = "/home/draco/.local/state/nightwatch/codex"
+		base, cacheErr := os.UserCacheDir()
+		if cacheErr != nil {
+			fmt.Fprintln(os.Stderr, "set FW_CODEX_LANE_STATE_DIR: "+cacheErr.Error())
+			return 2
+		}
+		state = base + "/fw-codex-lane"
 	}
-	if err := os.MkdirAll(state, 0755); err != nil {
+	if err := os.MkdirAll(state, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

@@ -1,6 +1,6 @@
 package main
 
-// Prototype for nightwatch/finish-pr.sh. --dry-run only reads PR state.
+// Prototype for a PR-finishing shell script. --dry-run only reads PR state.
 import (
 	"bytes"
 	"context"
@@ -67,9 +67,14 @@ func run(args []string) (rc int) {
 	}
 	logDir := os.Getenv("FW_FINISH_PR_LOG_DIR")
 	if logDir == "" {
-		logDir = "/home/draco/.local/state/nightwatch"
+		base, cacheErr := os.UserCacheDir()
+		if cacheErr != nil {
+			fmt.Fprintln(os.Stderr, "set FW_FINISH_PR_LOG_DIR: "+cacheErr.Error())
+			return 2
+		}
+		logDir = base + "/fw-finish-pr"
 	}
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(logDir, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
