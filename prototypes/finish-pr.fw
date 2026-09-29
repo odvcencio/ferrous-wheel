@@ -67,9 +67,14 @@ func run(args []string) (rc int) {
 	}
 	logDir := os.Getenv("FW_FINISH_PR_LOG_DIR")
 	if logDir == "" {
-		logDir = os.TempDir() + "/fw-finish-pr"
+		base, cacheErr := os.UserCacheDir()
+		if cacheErr != nil {
+			fmt.Fprintln(os.Stderr, "set FW_FINISH_PR_LOG_DIR: "+cacheErr.Error())
+			return 2
+		}
+		logDir = base + "/fw-finish-pr"
 	}
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(logDir, 0700); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
